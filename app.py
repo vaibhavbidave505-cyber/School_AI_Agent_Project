@@ -1,7 +1,11 @@
 import streamlit as st
+from dotenv import load_dotenv
 from agents import Agent, Runner
 from agents.decorators import tool
 import pandas as pd
+
+
+load_dotenv()
 
 
 # -----------------------------
