@@ -1,10 +1,18 @@
 import streamlit as st
-import pandas as pd
 import time
+from datetime import date
 from pathlib import Path
+
+import bcrypt
 from dotenv import load_dotenv
+from sqlalchemy import func
+
 from agents import Agent, Runner
 from agents.decorators import tool
+
+from database import SessionLocal, Student, Attendance, User
+
+
 
 # =========================================================
 # SETUP
@@ -18,49 +26,71 @@ st.set_page_config(
     layout="wide"
 )
 
-# =========================================================
-# DEMO SCHOOL LOGIN
-# NOTE: This is a demo login. For production, use a database
-# and hashed passwords.
-# =========================================================
-
-SCHOOLS = {
-    "SCHOOL001": {
-        "school_name": "Sunrise Public School",
-        "username": "admin",
-        "password": "admin123"
-    },
-    "SCHOOL002": {
-        "school_name": "Green Valley School",
-        "username": "admin",
-        "password": "admin123"
-    },
-    "SCHOOL003": {
-        "school_name": "Bright Future Academy",
-        "username": "admin",
-        "password": "admin123"
-    }
-}
-
-# =========================================================
-# LOGIN SECURITY
-# =========================================================
-
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_SECONDS = 300  # 5 minutes
 
-if "failed_attempts" not in st.session_state:
-    st.session_state.failed_attempts = 0
 
-if "locked_until" not in st.session_state:
-    st.session_state.locked_until = 0.0
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+defaults = {
+    "logged_in": False,
+    "failed_attempts": 0,
+    "locked_until": 0.0,
+    "messages": [],
+    "school_code": "",
+    "school_name": "",
+    "username": "",
+}
+
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# =========================================================
+# PASSWORD HELPERS
+# =========================================================
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a bcrypt password hash."""
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            password_hash.encode("utf-8")
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+# =========================================================
+# DATABASE LOGIN
+# NOTE:
+# The uploaded database.py currently contains Student and
+# Attendance tables, but it does NOT contain School/User
+# authentication tables. Therefore this version uses a
+# secure local admin credential from environment variables
+# while student/attendance data comes from school.db.
+# =========================================================
+
+# Optional .env fallback.
+import os
+
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
+
+SCHOOL_CODE = os.getenv("SCHOOL_CODE", "SCHOOL001")
+SCHOOL_NAME = os.getenv("SCHOOL_NAME", "School AI Academy")
+
+
+
 
 # =========================================================
 # LOGIN PAGE
 # =========================================================
 
 def login_page():
-
     st.markdown(
         """
         <style>
@@ -93,15 +123,8 @@ def login_page():
     left, center, right = st.columns([1, 1.5, 1])
 
     with center:
-
         with st.container(border=True):
-
             st.subheader("🔐 School Login")
-
-            school_code = st.text_input(
-                "🏫 School Code",
-                placeholder="Example: SCHOOL001"
-            )
 
             username = st.text_input(
                 "👤 Username",
@@ -121,16 +144,12 @@ def login_page():
             )
 
             if login_clicked:
-
-                # Check whether the account is temporarily locked
                 now = time.time()
 
                 if now < st.session_state.locked_until:
-
                     remaining = int(
                         st.session_state.locked_until - now
                     )
-
                     minutes = remaining // 60
                     seconds = remaining % 60
 
@@ -138,63 +157,64 @@ def login_page():
                         f"🔒 Too many failed attempts. "
                         f"Try again in {minutes}m {seconds}s."
                     )
+                    return
+
+                db = SessionLocal()
+                user = db.query(User).filter(    
+                    User.username == username.strip()
+                    ).first()
+                valid_login = False
+                if user:
+                    valid_login = verify_password(
+                    password,
+                    user.password_hash
+                 )
+                db.close()   
+
+                if valid_login:
+                    st.session_state.logged_in = True
+                    st.session_state.school_code = SCHOOL_CODE
+                    st.session_state.school_code = user.school_code
+                    st.session_state.username = username.strip()
+
+                    st.session_state.failed_attempts = 0
+                    st.session_state.locked_until = 0.0
+
+                    st.session_state.user_id = user.user_id
+                    st.session_state.user_name = user.name
+                    st.session_state.role = user.role
+
+                    st.success("✅ Login successful!")
+                    st.rerun()
 
                 else:
+                    st.session_state.failed_attempts += 1
 
-                    code = school_code.strip().upper()
-
-                    valid_login = (
-                        code in SCHOOLS
-                        and username.strip() == SCHOOLS[code]["username"]
-                        and password == SCHOOLS[code]["password"]
+                    attempts_left = (
+                        MAX_LOGIN_ATTEMPTS
+                        - st.session_state.failed_attempts
                     )
 
-                    if valid_login:
-
-                        st.session_state.logged_in = True
-                        st.session_state.school_code = code
-                        st.session_state.school_name = SCHOOLS[code]["school_name"]
-                        st.session_state.failed_attempts = 0
-                        st.session_state.locked_until = 0.0
-
-                        st.success("✅ Login successful!")
-
-                        st.rerun()
-
-                    else:
-
-                        st.session_state.failed_attempts += 1
-
-                        attempts_left = (
-                            MAX_LOGIN_ATTEMPTS
-                            - st.session_state.failed_attempts
+                    if attempts_left <= 0:
+                        st.session_state.locked_until = (
+                            time.time() + LOCKOUT_SECONDS
                         )
 
-                        if attempts_left <= 0:
-
-                            st.session_state.locked_until = (
-                                time.time() + LOCKOUT_SECONDS
-                            )
-
-                            st.error(
-                                "🔒 Too many failed password attempts. "
-                                "Login is locked for 5 minutes."
-                            )
-
-                        else:
-
-                            st.error(
-                                f"❌ Invalid School Code, username, or password. "
-                                f"{attempts_left} attempt(s) remaining."
-                            )
+                        st.error(
+                            "🔒 Too many failed password attempts. "
+                            "Login is locked for 5 minutes."
+                        )
+                    else:
+                        st.error(
+                            f"❌ Invalid username or password. "
+                            f"{attempts_left} attempt(s) remaining."
+                        )
 
             st.divider()
 
-            st.caption("Demo login:")
-            st.code(
-                "School Code: SCHOOL001\n"
-                "Username: admin\n"
-                "Password: admin123"
+            st.caption(
+                "Login credentials are read from environment variables "
+                "and are not stored in the source code."
             )
 
     st.divider()
@@ -208,61 +228,117 @@ def login_page():
 # CHECK LOGIN
 # =========================================================
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
 if not st.session_state.logged_in:
     login_page()
     st.stop()
 
 
 # =========================================================
-# LOAD ATTENDANCE DATA
+# DATABASE HELPERS
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parent
-CSV_FILE = BASE_DIR / "attendance.csv"
+def load_attendance_from_db():
+    db = SessionLocal()
+
+    try:
+        rows = (
+            db.query(
+                Student.id,
+                Student.name,
+                Student.class_name,
+                Student.division,
+                Attendance.date,
+                Attendance.status
+            )
+            .join(
+                Attendance,
+                Attendance.student_id == Student.id
+            )
+            .order_by(Student.name, Attendance.date)
+            .all()
+        )
+
+        data = []
+
+        for row in rows:
+            data.append({
+                "id": row.id,
+                "name": row.name,
+                "class": row.class_name,
+                "division": row.division,
+                "date": row.date,
+                "status": row.status
+            })
+
+        return data
+
+    finally:
+        db.close()
+
+
+def get_student_summary():
+    db = SessionLocal()
+
+    try:
+        students = db.query(Student).order_by(Student.name).all()
+
+        result = []
+
+        for student in students:
+            total_days = (
+                db.query(func.count(Attendance.id))
+                .filter(Attendance.student_id == student.id)
+                .scalar()
+                or 0
+            )
+
+            present_days = (
+                db.query(func.count(Attendance.id))
+                .filter(
+                    Attendance.student_id == student.id,
+                    func.lower(Attendance.status) == "present"
+                )
+                .scalar()
+                or 0
+            )
+
+            percentage = (
+                (present_days / total_days) * 100
+                if total_days
+                else 0
+            )
+
+            result.append({
+                "id": student.id,
+                "name": student.name,
+                "class": student.class_name,
+                "division": student.division,
+                "total_days": int(total_days),
+                "present_days": int(present_days),
+                "attendance_percentage": percentage,
+            })
+
+        return result
+
+    finally:
+        db.close()
+
+
+# =========================================================
+# LOAD DATABASE DATA
+# =========================================================
 
 try:
-
-    df = pd.read_csv(CSV_FILE)
-
-    df.columns = df.columns.str.strip().str.lower()
-
-    required_columns = {
-        "name",
-        "class",
-        "total_days",
-        "present_days"
-    }
-
-    missing = required_columns - set(df.columns)
-
-    if missing:
-        st.error(
-            f"❌ Missing columns in attendance.csv: {', '.join(sorted(missing))}"
-        )
-        st.stop()
-
-    df["name"] = df["name"].astype(str).str.strip()
-    df["class"] = df["class"].astype(str).str.strip()
-
-    df["total_days"] = pd.to_numeric(
-        df["total_days"], errors="coerce"
-    )
-
-    df["present_days"] = pd.to_numeric(
-        df["present_days"], errors="coerce"
-    )
-
-    df["attendance_percentage"] = (
-        df["present_days"] / df["total_days"] * 100
-    )
-
+    student_rows = get_student_summary()
 except Exception as e:
-
-    st.error(f"❌ Could not load attendance.csv: {e}")
+    st.error(f"❌ Could not load school database: {e}")
     st.stop()
+
+if not student_rows:
+    st.warning(
+        "⚠️ No student records found in school.db. "
+        "Add students and attendance records to the database first."
+    )
 
 
 # =========================================================
@@ -270,7 +346,6 @@ except Exception as e:
 # =========================================================
 
 with st.sidebar:
-
     st.header("🎓 School AI")
 
     st.success(
@@ -281,29 +356,43 @@ with st.sidebar:
         f"School Code: {st.session_state.school_code}"
     )
 
+    st.caption(
+        f"👤 Logged in as: {st.session_state.username}"
+    )
+    st.caption(
+    f"🎭 Role: {st.session_state.role.title()}"
+)
+
     st.divider()
 
     st.subheader("✨ Features")
-
+if st.session_state.role == "principal":
     st.write("✅ Student Attendance")
     st.write("📊 Attendance Analytics")
+    st.write("🔎 Student Search")
+    st.write("🤖 AI Assistant")
+    st.write("🔐 Login Protection")
+
+elif st.session_state.role == "teacher":
+    st.write("✅ Student Attendance")
     st.write("🔎 Student Search")
     st.write("🤖 AI Assistant")
 
     st.divider()
 
     st.info(
-        f"👨‍🎓 Total Students: {len(df)}"
+        f"👨‍🎓 Total Students: {len(student_rows)}"
     )
 
-    if st.button("🚪 Logout", width="stretch"):
+    st.sidebar.divider()
 
-        st.session_state.logged_in = False
-        st.session_state.pop("school_code", None)
-        st.session_state.pop("school_name", None)
-        st.session_state.messages = []
-
-        st.rerun()
+if st.sidebar.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.session_state.school_code = ""
+    st.session_state.school_name = ""
+    st.session_state.username = ""
+    st.session_state.messages = []
+    st.rerun()
 
 
 # =========================================================
@@ -325,27 +414,27 @@ st.divider()
 
 st.subheader("📊 Attendance Overview")
 
-total_students = len(df)
+total_students = len(student_rows)
 
-average_attendance = df[
-    "attendance_percentage"
-].mean()
-
-total_present = int(
-    df["present_days"].sum()
+average_attendance = (
+    sum(x["attendance_percentage"] for x in student_rows)
+    / total_students
+    if total_students
+    else 0
 )
 
-total_days = int(
-    df["total_days"].sum()
+total_present = sum(
+    x["present_days"] for x in student_rows
+)
+
+total_days = sum(
+    x["total_days"] for x in student_rows
 )
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric(
-        "👨‍🎓 Students",
-        total_students
-    )
+    st.metric("👨‍🎓 Students", total_students)
 
 with col2:
     st.metric(
@@ -354,16 +443,11 @@ with col2:
     )
 
 with col3:
-    st.metric(
-        "✅ Present Days",
-        total_present
-    )
+    st.metric("✅ Present Days", total_present)
 
 with col4:
-    st.metric(
-        "📅 Total Days",
-        total_days
-    )
+    st.metric("📅 Total Days", total_days)
+
 
 st.divider()
 
@@ -374,62 +458,62 @@ st.divider()
 
 st.subheader("🔎 Student Overview")
 
-student_names = sorted(
-    df["name"].tolist()
-)
+if student_rows:
+    student_names = sorted(
+        x["name"] for x in student_rows
+    )
 
-selected_student = st.selectbox(
-    "Select Student",
-    student_names
-)
+    selected_student = st.selectbox(
+        "Select Student",
+        student_names
+    )
 
-student = df[
-    df["name"] == selected_student
-].iloc[0]
+    student = next(
+        x for x in student_rows
+        if x["name"] == selected_student
+    )
 
-attendance = float(
-    student["attendance_percentage"]
-)
+    attendance = float(
+        student["attendance_percentage"]
+    )
 
-col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-with col1:
+    with col1:
+        st.markdown("### 👤 Student Details")
 
-    st.markdown("### 👤 Student Details")
-
-    st.info(
-        f"""
+        st.info(
+            f"""
 **Student:** {student['name']}
 
 **Class:** {student['class']}
 
-**Total Days:** {int(student['total_days'])}
+**Division:** {student['division']}
 
-**Present Days:** {int(student['present_days'])}
+**Total Days:** {student['total_days']}
+
+**Present Days:** {student['present_days']}
 """
-    )
+        )
 
-with col2:
+    with col2:
+        st.markdown("### 📈 Attendance")
 
-    st.markdown("### 📈 Attendance")
+        st.metric(
+            "Attendance Percentage",
+            f"{attendance:.1f}%"
+        )
 
-    st.metric(
-        "Attendance Percentage",
-        f"{attendance:.1f}%"
-    )
+        st.progress(
+            min(max(attendance / 100, 0.0), 1.0)
+        )
 
-    st.progress(
-        min(max(attendance / 100, 0.0), 1.0)
-    )
-
-    if attendance >= 85:
-        st.success("🟢 Excellent Attendance")
-
-    elif attendance >= 75:
-        st.warning("🟡 Good Attendance")
-
-    else:
-        st.error("🔴 Low Attendance - Needs Attention")
+        if attendance >= 85:
+            st.success("🟢 Excellent Attendance")
+        elif attendance >= 75:
+            st.warning("🟡 Good Attendance")
+        else:
+            st.error("🔴 Low Attendance - Needs Attention")
 
 
 st.divider()
@@ -441,33 +525,25 @@ st.divider()
 
 st.subheader("📋 All Students")
 
-display_df = df[
-    [
-        "name",
-        "class",
-        "total_days",
-        "present_days",
-        "attendance_percentage"
-    ]
-].copy()
+if student_rows:
+    display_rows = []
 
-display_df.columns = [
-    "Student",
-    "Class",
-    "Total Days",
-    "Present Days",
-    "Attendance %"
-]
+    for x in student_rows:
+        display_rows.append({
+            "Student": x["name"],
+            "Class": x["class"],
+            "Division": x["division"],
+            "Total Days": x["total_days"],
+            "Present Days": x["present_days"],
+            "Attendance %": round(x["attendance_percentage"], 1),
+        })
 
-display_df["Attendance %"] = (
-    display_df["Attendance %"].round(1)
-)
+    st.dataframe(
+        display_rows,
+        width="stretch",
+        hide_index=True
+    )
 
-st.dataframe(
-    display_df,
-    width="stretch",
-    hide_index=True
-)
 
 st.divider()
 
@@ -478,36 +554,60 @@ st.divider()
 
 @tool
 def get_attendance(student_name: str) -> str:
-    """Check a student's attendance."""
+    """Check a student's attendance from the school database."""
 
-    search_name = student_name.strip().lower()
+    db = SessionLocal()
 
-    result = df[
-        df["name"].str.lower().str.strip()
-        == search_name
-    ]
-
-    if result.empty:
-
-        return (
-            f"No attendance record found "
-            f"for {student_name}."
+    try:
+        student = (
+            db.query(Student)
+            .filter(
+                func.lower(Student.name)
+                == student_name.strip().lower()
+            )
+            .first()
         )
 
-    row = result.iloc[0]
+        if not student:
+            return (
+                f"No attendance record found for "
+                f"{student_name}."
+            )
 
-    percentage = (
-        row["present_days"] /
-        row["total_days"] * 100
-    )
+        total_days = (
+            db.query(func.count(Attendance.id))
+            .filter(Attendance.student_id == student.id)
+            .scalar()
+            or 0
+        )
 
-    return (
-        f"Student: {row['name']}\n"
-        f"Class: {row['class']}\n"
-        f"Total Days: {int(row['total_days'])}\n"
-        f"Present Days: {int(row['present_days'])}\n"
-        f"Attendance: {percentage:.2f}%"
-    )
+        present_days = (
+            db.query(func.count(Attendance.id))
+            .filter(
+                Attendance.student_id == student.id,
+                func.lower(Attendance.status) == "present"
+            )
+            .scalar()
+            or 0
+        )
+
+        percentage = (
+            (present_days / total_days) * 100
+            if total_days
+            else 0
+        )
+
+        return (
+            f"Student: {student.name}\n"
+            f"Class: {student.class_name}\n"
+            f"Division: {student.division}\n"
+            f"Total Days: {int(total_days)}\n"
+            f"Present Days: {int(present_days)}\n"
+            f"Attendance: {percentage:.2f}%"
+        )
+
+    finally:
+        db.close()
 
 
 # =========================================================
@@ -547,41 +647,27 @@ st.caption(
     'Ask questions like: "What is Aarav\'s attendance?"'
 )
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
 for message in st.session_state.messages:
-
     with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        st.markdown(
-            message["content"]
-        )
 
 prompt = st.chat_input(
     "Ask about student attendance..."
 )
 
 if prompt:
-
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": prompt
-        }
-    )
+    st.session_state.messages.append({
+        "role": "user",
+        "content": prompt
+    })
 
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-
-        with st.spinner(
-            "🤖 Checking attendance..."
-        ):
-
+        with st.spinner("🤖 Checking attendance..."):
             try:
-
                 result = Runner.run_sync(
                     agent,
                     prompt
@@ -590,17 +676,14 @@ if prompt:
                 response = result.final_output
 
             except Exception as e:
-
                 response = f"⚠️ Error: {e}"
 
         st.markdown(response)
 
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": response
-        }
-    )
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response
+    })
 
 
 # =========================================================
@@ -611,5 +694,5 @@ st.divider()
 
 st.caption(
     "🎓 School AI Assistant • "
-    "Built with Python + Streamlit + OpenAI Agents"
+    "Python + Streamlit + SQLAlchemy + OpenAI Agents"
 )

@@ -23,8 +23,21 @@ class Attendance(Base):
     date = Column(Date, nullable=False)
     status = Column(String, nullable=False)
 
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False)  # principal / teacher
+    school_code = Column(String, nullable=False)
+
 Base.metadata.create_all(engine)
 
 SessionLocal = sessionmaker(bind=engine)
+
 
 print("✅ School database created successfully!")
