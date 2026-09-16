@@ -334,11 +334,8 @@ except Exception as e:
     st.error(f"❌ Could not load school database: {e}")
     st.stop()
 
-if not student_rows:
-    st.warning(
-        "⚠️ No student records found in school.db. "
-        "Add students and attendance records to the database first."
-    )
+
+   
 
 
 # =========================================================
@@ -363,7 +360,19 @@ with st.sidebar:
     f"🎭 Role: {st.session_state.role.title()}"
 )
 
-    st.divider()
+    st.sidebar.divider()
+
+    st.sidebar.subheader("📂 Upload Student CSV")
+
+    uploaded_file = st.sidebar.file_uploader(
+        "Choose CSV file",
+        type=["csv"]
+    )
+
+    if uploaded_file is not None:
+        st.sidebar.success("✅ CSV file selected")
+
+    
 
     st.subheader("✨ Features")
 if st.session_state.role == "principal":

@@ -41,5 +41,12 @@ create_user(
     "Teacher@123",
     "teacher"
 )
+create_user(
+    "STU001",
+    "Student One",
+    "student1",
+    "Student@123",
+    "student"
+)
 
 print("🎉 Principal and Teacher users created successfully!")

@@ -14,6 +14,10 @@ class Student(Base):
     class_name = Column(String, nullable=False)
     division = Column(String, nullable=False)
     parent_contact = Column(String)
+    total_days = Column(Integer, default=0)
+    present_days = Column(Integer, default=0)
+    school_code = Column(String, nullable=False)
+
 
 class Attendance(Base):
     __tablename__ = "attendance"

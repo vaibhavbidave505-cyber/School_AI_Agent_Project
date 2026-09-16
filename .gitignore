@@ -1,5 +1,5 @@
 ﻿.env
+school.db
 venv/
 __pycache__/
 *.pyc
-school.db
