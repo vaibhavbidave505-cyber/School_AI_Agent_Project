@@ -275,32 +275,22 @@ def load_attendance_from_db():
     finally:
         db.close()
 
-
 def get_student_summary():
     db = SessionLocal()
 
     try:
-        students = db.query(Student).order_by(Student.name).all()
+        students = (
+            db.query(Student)
+            .filter(Student.school_code == st.session_state.school_code)
+            .order_by(Student.name)
+            .all()
+        )
 
         result = []
 
         for student in students:
-            total_days = (
-                db.query(func.count(Attendance.id))
-                .filter(Attendance.student_id == student.id)
-                .scalar()
-                or 0
-            )
-
-            present_days = (
-                db.query(func.count(Attendance.id))
-                .filter(
-                    Attendance.student_id == student.id,
-                    func.lower(Attendance.status) == "present"
-                )
-                .scalar()
-                or 0
-            )
+            total_days = student.total_days or 0
+            present_days = student.present_days or 0
 
             percentage = (
                 (present_days / total_days) * 100
@@ -359,18 +349,94 @@ with st.sidebar:
     st.caption(
     f"🎭 Role: {st.session_state.role.title()}"
 )
-
+if st.session_state.role == "principal":
     st.sidebar.divider()
 
     st.sidebar.subheader("📂 Upload Student CSV")
 
     uploaded_file = st.sidebar.file_uploader(
-        "Choose CSV file",
-        type=["csv"]
-    )
+    "Choose CSV file",
+    type=["csv"]
+)
+uploaded_file = None
+if uploaded_file is not None:
+    st.sidebar.success("✅ CSV file selected")
 
-    if uploaded_file is not None:
-        st.sidebar.success("✅ CSV file selected")
+    if st.sidebar.button("📥 Import CSV to this School"):
+        try:
+            import pandas as pd
+
+            df = pd.read_csv(uploaded_file)
+
+            required_columns = {
+                "name",
+                "class",
+                "total_days",
+                "present_days"
+            }
+
+            if not required_columns.issubset(df.columns):
+                missing = required_columns - set(df.columns)
+                st.sidebar.error(
+                    f"❌ Missing columns: {', '.join(missing)}"
+                )
+            else:
+                db = SessionLocal()
+                imported = 0
+                updated = 0
+
+                for _, row in df.iterrows():
+                    name = str(row["name"]).strip()
+                    class_value = str(row["class"]).strip()
+
+                    if not name or not class_value:
+                        continue
+
+                    # Example: 8A → class_name = 8, division = A
+                    if class_value[-1].isalpha():
+                        class_name = class_value[:-1]
+                        division = class_value[-1]
+                    else:
+                        class_name = class_value
+                        division = ""
+
+                    existing = db.query(Student).filter(
+                        Student.name == name,
+                        Student.school_code == st.session_state.school_code
+                    ).first()
+
+                    if existing:
+                        existing.class_name = class_name
+                        existing.division = division
+                        existing.total_days = int(row["total_days"])
+                        existing.present_days = int(row["present_days"])
+                        updated += 1
+                    else:
+                        student = Student(
+                            name=name,
+                            class_name=class_name,
+                            division=division,
+                            parent_contact="",
+                            total_days=int(row["total_days"]),
+                            present_days=int(row["present_days"]),
+                            school_code=st.session_state.school_code
+                        )
+
+                        db.add(student)
+                        imported += 1
+
+                db.commit()
+                db.close()
+
+                st.sidebar.success(
+                    f"✅ Import complete! "
+                    f"New: {imported}, Updated: {updated}"
+                )
+
+                st.rerun()
+
+        except Exception as e:
+            st.sidebar.error(f"❌ Import failed: {e}")
 
     
 
@@ -527,6 +593,76 @@ if student_rows:
 
 st.divider()
 
+# =========================================================
+# DELETE STUDENT - PRINCIPAL ONLY
+# =========================================================
+
+if st.session_state.role == "principal" and student_rows:
+    st.divider()
+    st.subheader("🗑️ Delete Student")
+
+    delete_names = sorted(
+        x["name"] for x in student_rows
+    )
+
+    delete_student_name = st.selectbox(
+        "Select student to delete",
+        delete_names,
+        key="delete_student_select"
+    )
+
+    if st.button("🗑️ Delete Selected Student"):
+        st.session_state.confirm_delete_student = delete_student_name
+
+    if st.session_state.get("confirm_delete_student") == delete_student_name:
+        st.warning(
+            f"⚠️ Are you sure you want to permanently delete "
+            f"**{delete_student_name}** and their attendance records?"
+        )
+
+        if st.button(
+            "✅ Yes, Permanently Delete",
+            key="confirm_delete_button"
+        ):
+            db = SessionLocal()
+
+            try:
+                student_to_delete = (
+                    db.query(Student)
+                    .filter(
+                        Student.name == delete_student_name,
+                        Student.school_code == st.session_state.school_code
+                    )
+                    .first()
+                )
+
+                if student_to_delete:
+                    db.query(Attendance).filter(
+                        Attendance.student_id == student_to_delete.id
+                    ).delete(
+                        synchronize_session=False
+                    )
+
+                    db.delete(student_to_delete)
+                    db.commit()
+
+                    st.session_state.pop(
+                        "confirm_delete_student",
+                        None
+                    )
+
+                    st.success(
+                        f"✅ {delete_student_name} deleted successfully."
+                    )
+
+                    st.rerun()
+
+            except Exception as e:
+                db.rollback()
+                st.error(f"❌ Delete failed: {e}")
+
+            finally:
+                db.close()
 
 # =========================================================
 # ALL STUDENTS
