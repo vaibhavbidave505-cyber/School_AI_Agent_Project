@@ -13,7 +13,10 @@ if "present_days" not in columns:
 
 if "school_code" not in columns:
     cursor.execute("ALTER TABLE students ADD COLUMN school_code TEXT NOT NULL DEFAULT 'SCHOOL001'")
-
+if "gender" not in columns:
+    cursor.execute(
+        "ALTER TABLE students ADD COLUMN gender TEXT"
+    )
 conn.commit()
 conn.close()
 

@@ -303,9 +303,11 @@ def get_student_summary():
                 "name": student.name,
                 "class": student.class_name,
                 "division": student.division,
+                "gender": student.gender,
                 "total_days": int(total_days),
                 "present_days": int(present_days),
                 "attendance_percentage": percentage,
+
             })
 
         return result
@@ -320,8 +322,10 @@ def get_student_summary():
 
 try:
     student_rows = get_student_summary()
+    
 except Exception as e:
     st.error(f"❌ Could not load school database: {e}")
+    
     st.stop()
 
 
@@ -525,6 +529,60 @@ with col4:
 
 
 st.divider()
+# =========================================================
+# CLASS-WISE ATTENDANCE ANALYTICS
+# =========================================================
+
+st.divider()
+st.subheader("📊 Class-wise Attendance")
+
+if student_rows:
+
+    class_data = {}
+
+    for student in student_rows:
+        class_name = student["class"]
+
+        if class_name not in class_data:
+            class_data[class_name] = {
+                "students": 0,
+                "present_days": 0,
+                "total_days": 0
+            }
+
+        class_data[class_name]["students"] += 1
+        class_data[class_name]["present_days"] += student["present_days"]
+        class_data[class_name]["total_days"] += student["total_days"]
+
+    analytics_rows = []
+
+    for class_name, data in sorted(class_data.items()):
+
+        total_days = data["total_days"]
+        present_days = data["present_days"]
+
+        attendance = (
+            (present_days / total_days) * 100
+            if total_days > 0
+            else 0
+        )
+
+        analytics_rows.append({
+            "Class": class_name,
+            "Students": data["students"],
+            "Present Days": present_days,
+            "Total Days": total_days,
+            "Attendance %": round(attendance, 1)
+        })
+
+    st.dataframe(
+        analytics_rows,
+        use_container_width=True,
+        hide_index=True
+    )
+
+else:
+    st.info("No student data available.")
 
 
 # =========================================================
@@ -669,11 +727,53 @@ if st.session_state.role == "principal" and student_rows:
 # =========================================================
 
 st.subheader("📋 All Students")
+search_name = st.text_input(
+    "🔎 Search Student",
+    placeholder="Enter student name"
+)
+class_options = sorted(
+    {str(x["class"]) for x in student_rows}
+)
 
+selected_class = st.selectbox(
+    "🏫 Select Class",
+    ["All"] + class_options
+)
+division_options = sorted(
+    {str(x["division"]) for x in student_rows}
+)
+
+selected_division = st.selectbox(
+    "🏷️ Select Division",
+    ["All"] + division_options
+)
+gender_options = sorted(
+    {str(x["gender"]) for x in student_rows}
+)
+
+selected_gender = st.selectbox(
+    "⚥ Select Gender",
+    ["All"] + gender_options
+)
 if student_rows:
     display_rows = []
 
-    for x in student_rows:
+    filtered_students = [
+        x for x in student_rows
+        if search_name.lower() in x["name"].lower()
+        and (
+        selected_class == "All"
+        or str(x["class"]) == selected_class
+    )and (
+    selected_division == "All"
+    or str(x["division"]) == selected_division
+) and (
+    selected_gender == "All"
+    or str(x.get("gender") or "") == selected_gender
+)
+    ]
+
+    for x in filtered_students:
         display_rows.append({
             "Student": x["name"],
             "Class": x["class"],
@@ -691,7 +791,81 @@ if student_rows:
 
 
 st.divider()
+# Class-wise Attendance Chart
+if display_rows:
+    chart_data = {}
 
+    for row in display_rows:
+        class_name = row["Class"]
+        chart_data[class_name] = row["Attendance %"]
+
+    st.subheader("📊 Class-wise Attendance")
+    st.bar_chart(chart_data)
+
+st.divider()
+# Attendance Summary
+if display_rows:
+    total_students = len(display_rows)
+    total_days = sum(row["Total Days"] for row in display_rows)
+    present_days = sum(row["Present Days"] for row in display_rows)
+
+    overall_attendance = (
+        (present_days / total_days) * 100
+        if total_days > 0 else 0
+    )
+
+    st.subheader("📌 Attendance Summary")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("👨‍🎓 Total Students", total_students)
+    col2.metric("📅 Total Days", total_days)
+    col3.metric("✅ Present Days", present_days)
+    col4.metric("📊 Overall Attendance", f"{overall_attendance:.1f}%")
+
+# Low Attendance Alert
+low_attendance = [
+    row for row in display_rows
+    if row["Attendance %"] < 80
+]
+
+if low_attendance:
+    st.warning(
+        f"⚠️ {len(low_attendance)} student(s) have attendance below 80%."
+    )
+else:
+    st.success("✅ All students have attendance of 80% or above.")
+# Low Attendance Students
+if low_attendance:
+    st.subheader("⚠️ Low Attendance Students")
+
+    low_rows = []
+
+    for row in low_attendance:
+        low_rows.append({
+            "Student": row["Student"],
+            "Class": row["Class"],
+            "Division": row["Division"],
+            "Attendance %": row["Attendance %"]
+        })
+
+    st.dataframe(
+        low_rows,
+        width="stretch",
+        hide_index=True
+    )    
+# Download Low Attendance Report
+if low_attendance:
+    import pandas as pd
+
+    download_df = pd.DataFrame(low_rows)
+
+    st.download_button(
+        label="📥 Download Low Attendance Report",
+        data=download_df.to_csv(index=False),
+        file_name="low_attendance_report.csv",
+        mime="text/csv"
+    )    
 
 # =========================================================
 # AI TOOL
