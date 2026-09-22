@@ -362,7 +362,7 @@ if st.session_state.role == "principal":
     "Choose CSV file",
     type=["csv"]
 )
-uploaded_file = None
+
 if uploaded_file is not None:
     st.sidebar.success("✅ CSV file selected")
 
@@ -371,12 +371,14 @@ if uploaded_file is not None:
             import pandas as pd
 
             df = pd.read_csv(uploaded_file)
+            df.columns = df.columns.astype(str).str.strip().str.lower()
 
             required_columns = {
                 "name",
                 "class",
                 "total_days",
-                "present_days"
+                "present_days",
+                "gender"
             }
 
             if not required_columns.issubset(df.columns):
@@ -392,6 +394,8 @@ if uploaded_file is not None:
                 for _, row in df.iterrows():
                     name = str(row["name"]).strip()
                     class_value = str(row["class"]).strip()
+                    gender = str(row["gender"]).strip()
+                   
 
                     if not name or not class_value:
                         continue
@@ -412,6 +416,7 @@ if uploaded_file is not None:
                     if existing:
                         existing.class_name = class_name
                         existing.division = division
+                        existing.gender = gender
                         existing.total_days = int(row["total_days"])
                         existing.present_days = int(row["present_days"])
                         updated += 1
@@ -423,6 +428,7 @@ if uploaded_file is not None:
                             parent_contact="",
                             total_days=int(row["total_days"]),
                             present_days=int(row["present_days"]),
+                            gender=gender,
                             school_code=st.session_state.school_code
                         )
 
@@ -617,6 +623,8 @@ if student_rows:
 
         st.info(
             f"""
+**Gender:** {student['gender']}            
+
 **Student:** {student['name']}
 
 **Class:** {student['class']}
@@ -775,7 +783,9 @@ if student_rows:
 
     for x in filtered_students:
         display_rows.append({
-            "Student": x["name"],
+
+        "Student": x["name"],
+            "Gender": x["gender"],
             "Class": x["class"],
             "Division": x["division"],
             "Total Days": x["total_days"],
