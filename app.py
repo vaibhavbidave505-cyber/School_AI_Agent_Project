@@ -1,16 +1,26 @@
 import streamlit as st
 import time
-from datetime import date
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
+import pandas as pd
 
 import bcrypt
 from dotenv import load_dotenv
-from sqlalchemy import func
+
+from sqlalchemy import func, case
 
 from agents import Agent, Runner
 from agents.decorators import tool
 
 from database import SessionLocal, Student, Attendance, User
+import os
+import json
+import hmac
+import hashlib
+import base64
+
+
 
 
 
@@ -25,6 +35,10 @@ st.set_page_config(
     page_icon="🎓",
     layout="wide"
 )
+# =========================================================
+# LOGIN COOKIE
+# =========================================================
+
 
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_SECONDS = 300  # 5 minutes
@@ -36,12 +50,16 @@ LOCKOUT_SECONDS = 300  # 5 minutes
 
 defaults = {
     "logged_in": False,
+    "just_logged_out": False,
+    "user_name": "",
     "failed_attempts": 0,
     "locked_until": 0.0,
     "messages": [],
     "school_code": "",
     "school_name": "",
     "username": "",
+    "role": "",
+    "user_id": None,
 }
 
 for key, value in defaults.items():
@@ -82,8 +100,6 @@ ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
 
 SCHOOL_CODE = os.getenv("SCHOOL_CODE", "SCHOOL001")
 SCHOOL_NAME = os.getenv("SCHOOL_NAME", "School AI Academy")
-
-
 
 
 # =========================================================
@@ -171,11 +187,21 @@ def login_page():
                  )
                 db.close()   
 
-                if valid_login:
+                if valid_login: 
+                    st.write(
+                      "DEBUG:",
+                     user.username,
+                     user.role,
+                     user.school_code
+                    )
+
+                    st.session_state.just_logged_out = False
+
                     st.session_state.logged_in = True
-                    st.session_state.school_code = SCHOOL_CODE
                     st.session_state.school_code = user.school_code
                     st.session_state.username = username.strip()
+
+                
 
                     st.session_state.failed_attempts = 0
                     st.session_state.locked_until = 0.0
@@ -224,6 +250,7 @@ def login_page():
     )
 
 
+
 # =========================================================
 # CHECK LOGIN
 # =========================================================
@@ -254,8 +281,17 @@ def load_attendance_from_db():
                 Attendance,
                 Attendance.student_id == Student.id
             )
+           .filter(
+                 Student.school_code
+                 == st.session_state.school_code
+             )
             .order_by(Student.name, Attendance.date)
+
+
             .all()
+           
+
+            
         )
 
         data = []
@@ -354,100 +390,143 @@ with st.sidebar:
     f"🎭 Role: {st.session_state.role.title()}"
 )
 if st.session_state.role == "principal":
+
     st.sidebar.divider()
 
     st.sidebar.subheader("📂 Upload Student CSV")
 
     uploaded_file = st.sidebar.file_uploader(
-    "Choose CSV file",
-    type=["csv"]
-)
+        "Choose CSV file",
+        type=["csv"]
+    )
 
-if uploaded_file is not None:
-    st.sidebar.success("✅ CSV file selected")
+    if uploaded_file is not None:
 
-    if st.sidebar.button("📥 Import CSV to this School"):
-        try:
-            import pandas as pd
+        st.sidebar.success("✅ CSV file selected")
 
-            df = pd.read_csv(uploaded_file)
-            df.columns = df.columns.astype(str).str.strip().str.lower()
+        if st.sidebar.button("📥 Import CSV to this School"):
 
-            required_columns = {
-                "name",
-                "class",
-                "total_days",
-                "present_days",
-                "gender"
-            }
+            try:
+                import pandas as pd
 
-            if not required_columns.issubset(df.columns):
-                missing = required_columns - set(df.columns)
-                st.sidebar.error(
-                    f"❌ Missing columns: {', '.join(missing)}"
+                df = pd.read_csv(uploaded_file)
+
+                df.columns = (
+                    df.columns
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
                 )
-            else:
-                db = SessionLocal()
-                imported = 0
-                updated = 0
 
-                for _, row in df.iterrows():
-                    name = str(row["name"]).strip()
-                    class_value = str(row["class"]).strip()
-                    gender = str(row["gender"]).strip()
-                   
+                required_columns = {
+                    "name",
+                    "class",
+                    "total_days",
+                    "present_days",
+                    "gender"
+                }
 
-                    if not name or not class_value:
-                        continue
+                if not required_columns.issubset(df.columns):
 
-                    # Example: 8A → class_name = 8, division = A
-                    if class_value[-1].isalpha():
-                        class_name = class_value[:-1]
-                        division = class_value[-1]
-                    else:
-                        class_name = class_value
-                        division = ""
+                    missing = (
+                        required_columns
+                        - set(df.columns)
+                    )
 
-                    existing = db.query(Student).filter(
-                        Student.name == name,
-                        Student.school_code == st.session_state.school_code
-                    ).first()
+                    st.sidebar.error(
+                        f"❌ Missing columns: {', '.join(missing)}"
+                    )
 
-                    if existing:
-                        existing.class_name = class_name
-                        existing.division = division
-                        existing.gender = gender
-                        existing.total_days = int(row["total_days"])
-                        existing.present_days = int(row["present_days"])
-                        updated += 1
-                    else:
-                        student = Student(
-                            name=name,
-                            class_name=class_name,
-                            division=division,
-                            parent_contact="",
-                            total_days=int(row["total_days"]),
-                            present_days=int(row["present_days"]),
-                            gender=gender,
-                            school_code=st.session_state.school_code
+                else:
+
+                    db = SessionLocal()
+
+                    imported = 0
+                    updated = 0
+
+                    for _, row in df.iterrows():
+
+                        name = str(row["name"]).strip()
+                        class_value = str(row["class"]).strip()
+                        gender = str(row["gender"]).strip()
+
+                        if not name or not class_value:
+                            continue
+
+                        if class_value[-1].isalpha():
+
+                            class_name = class_value[:-1]
+                            division = class_value[-1]
+
+                        else:
+
+                            class_name = class_value
+                            division = ""
+
+                        existing = (
+                            db.query(Student)
+                            .filter(
+                                Student.name == name,
+                                Student.school_code
+                                == st.session_state.school_code
+                            )
+                            .first()
                         )
 
-                        db.add(student)
-                        imported += 1
+                        if existing:
 
-                db.commit()
-                db.close()
+                            existing.class_name = class_name
+                            existing.division = division
+                            existing.gender = gender
 
-                st.sidebar.success(
-                    f"✅ Import complete! "
-                    f"New: {imported}, Updated: {updated}"
+                            existing.total_days = int(
+                                row["total_days"]
+                            )
+
+                            existing.present_days = int(
+                                row["present_days"]
+                            )
+
+                            updated += 1
+
+                        else:
+
+                            student = Student(
+                                name=name,
+                                class_name=class_name,
+                                division=division,
+                                parent_contact="",
+                                total_days=int(
+                                    row["total_days"]
+                                ),
+                                present_days=int(
+                                    row["present_days"]
+                                ),
+                                gender=gender,
+                                school_code=(
+                                    st.session_state.school_code
+                                )
+                            )
+
+                            db.add(student)
+                            imported += 1
+
+                    db.commit()
+                    db.close()
+
+                    st.sidebar.success(
+                        f"✅ Import complete! "
+                        f"New: {imported}, "
+                        f"Updated: {updated}"
+                    )
+
+                    st.rerun()
+
+            except Exception as e:
+
+                st.sidebar.error(
+                    f"❌ Import failed: {e}"
                 )
-
-                st.rerun()
-
-        except Exception as e:
-            st.sidebar.error(f"❌ Import failed: {e}")
-
     
 
     st.subheader("✨ Features")
@@ -472,13 +551,18 @@ elif st.session_state.role == "teacher":
     st.sidebar.divider()
 
 if st.sidebar.button("🚪 Logout"):
+
     st.session_state.logged_in = False
     st.session_state.school_code = ""
     st.session_state.school_name = ""
     st.session_state.username = ""
+    st.session_state.user_id = None
+    st.session_state.user_name = ""
+    st.session_state.role = ""
     st.session_state.messages = []
-    st.rerun()
 
+    st.rerun()
+    
 
 # =========================================================
 # HEADER
@@ -590,7 +674,335 @@ if student_rows:
 else:
     st.info("No student data available.")
 
+# =========================================================
+# GENDER-WISE ATTENDANCE ANALYTICS
+# =========================================================
 
+st.subheader("⚥ Gender-wise Attendance")
+
+if student_rows:
+
+    gender_data = {}
+
+    for student in student_rows:
+        gender = str(student.get("gender") or "Unknown")
+
+        if gender not in gender_data:
+            gender_data[gender] = {
+                "students": 0,
+                "present_days": 0,
+                "total_days": 0
+            }
+
+        gender_data[gender]["students"] += 1
+        gender_data[gender]["present_days"] += student["present_days"]
+        gender_data[gender]["total_days"] += student["total_days"]
+
+    gender_rows = []
+
+    for gender, data in sorted(gender_data.items()):
+
+        attendance = (
+            (data["present_days"] / data["total_days"]) * 100
+            if data["total_days"] > 0
+            else 0
+        )
+
+        gender_rows.append({
+            "Gender": gender,
+            "Students": data["students"],
+            "Present Days": data["present_days"],
+            "Total Days": data["total_days"],
+            "Attendance %": round(attendance, 1)
+        })
+
+    st.dataframe(
+        gender_rows,
+        width="stretch",
+        hide_index=True
+    )
+
+    gender_chart = {
+        row["Gender"]: row["Attendance %"]
+        for row in gender_rows
+    }
+
+    st.bar_chart(gender_chart)
+
+else:
+    st.info("No student data available.")
+# =========================================================
+# MONTH SELECT + DAY-WISE ATTENDANCE TREND
+# =========================================================
+
+st.divider()
+st.subheader("📅 Month-wise / Day-wise Attendance Trend")
+
+db = SessionLocal()
+
+try:
+    # Available months
+        # Available months
+    available_months = (
+        db.query(
+            func.strftime("%Y-%m", Attendance.date).label("month")
+        )
+        .join(
+            Student,
+            Attendance.student_id == Student.id
+        )
+        .filter(
+            Student.school_code
+            == st.session_state.school_code
+        )
+        .distinct()
+        .order_by(
+            func.strftime("%Y-%m", Attendance.date)
+        )
+        .all()
+    )
+
+    if available_months:
+
+        month_values = [
+            row.month
+            for row in available_months
+        ]
+
+        # Month selection
+        selected_month = st.selectbox(
+            "Select Month",
+            month_values
+        )
+
+        # Day-wise attendance for selected month
+        daily_data = (
+    db.query(
+        Attendance.date,
+        func.count(Attendance.id).label("total_days"),
+        func.sum(
+            case(
+                (
+                    func.lower(Attendance.status) == "present",
+                    1
+                ),
+                else_=0
+            )
+        ).label("present_days")
+    )
+    .join(
+        Student,
+        Attendance.student_id == Student.id
+    )
+    .filter(
+        Student.school_code
+        == st.session_state.school_code,
+        func.strftime("%Y-%m", Attendance.date)
+        == selected_month
+    )
+            .group_by(
+                Attendance.date
+            )
+            .order_by(
+                Attendance.date
+            )
+            .all()
+        )
+
+        if daily_data:
+
+            day_rows = []
+
+            for row in daily_data:
+
+                total = int(row.total_days or 0)
+                present = int(row.present_days or 0)
+
+                percentage = (
+                    (present / total) * 100
+                    if total > 0
+                    else 0
+                )
+
+                day_rows.append({
+                    "Date": row.date.strftime("%d-%m-%Y"),
+                    "Present Days": present,
+                    "Total Days": total,
+                    "Attendance %": round(percentage, 1)
+                })
+
+            # Table
+            st.dataframe(
+                day_rows,
+                width="stretch",
+                hide_index=True
+            )
+
+            # Day-wise chart
+            day_chart = {
+                row["Date"]: row["Attendance %"]
+                for row in day_rows
+            }
+
+            st.line_chart(day_chart)
+
+        else:
+            st.info(
+                f"No attendance records found for {selected_month}."
+            )
+
+    else:
+        st.info("No attendance records available.")
+
+finally:
+    db.close()
+# =========================================================
+# CLASS-WISE ATTENDANCE TREND
+# =========================================================
+
+st.divider()
+st.subheader("🏫 Class-wise Attendance Trend")
+
+db = SessionLocal()
+
+try:
+    # Available classes
+    classes = (
+    db.query(Student.class_name)
+    .filter(
+        Student.school_code
+        == st.session_state.school_code
+    )
+    .distinct()
+    .order_by(Student.class_name)
+    .all()
+)
+    class_values = [row.class_name for row in classes if row.class_name]
+
+    if class_values:
+
+        selected_class = st.selectbox(
+            "Select Class",
+            class_values,
+            key="class_trend_select"
+        )
+
+        # Available months for selected class
+        months = (
+            db.query(
+                func.strftime("%Y-%m", Attendance.date).label("month")
+            )
+            .join(
+                Student,
+                Attendance.student_id == Student.id
+            )
+            .filter(
+                 Student.school_code
+                == st.session_state.school_code,
+                Student.class_name == selected_class
+            )
+            .distinct()
+            .order_by(
+                func.strftime("%Y-%m", Attendance.date)
+            )
+            .all()
+        )
+
+        month_values = [row.month for row in months if row.month]
+
+        if month_values:
+
+            selected_month = st.selectbox(
+                "Select Month",
+                month_values,
+                key="class_month_trend_select"
+            )
+
+            # Day-wise attendance for selected class + month
+            daily_data = (
+                db.query(
+                    Attendance.date,
+                    func.count(Attendance.id).label("total_days"),
+                    func.sum(
+                        case(
+                            (
+                                func.lower(Attendance.status) == "present",
+                                1
+                            ),
+                            else_=0
+                        )
+                    ).label("present_days")
+                )
+                .join(
+                    Student,
+                    Attendance.student_id == Student.id
+                )
+                .filter(
+                    Student.school_code
+                    == st.session_state.school_code,
+                    Student.class_name == selected_class,
+                    func.strftime("%Y-%m", Attendance.date)
+                    == selected_month
+                    )
+                .group_by(
+                    Attendance.date
+                )
+                .order_by(
+                    Attendance.date
+                )
+                .all()
+            )
+
+            if daily_data:
+
+                trend_data = []
+
+                for row in daily_data:
+
+                    total = int(row.total_days or 0)
+                    present = int(row.present_days or 0)
+
+                    percentage = (
+                        (present / total) * 100
+                        if total > 0
+                        else 0
+                    )
+
+                    trend_data.append({
+                        "Date": row.date.strftime("%d-%m-%Y"),
+                        "Attendance %": round(percentage, 1)
+                    })
+
+                # Table
+                st.dataframe(
+                    trend_data,
+                    width="stretch",
+                    hide_index=True
+                )
+
+                # Line chart
+                chart_data = {
+                    row["Date"]: row["Attendance %"]
+                    for row in trend_data
+                }
+
+                st.line_chart(chart_data)
+
+            else:
+                st.info(
+                    "No attendance records found for this selection."
+                )
+
+        else:
+            st.info(
+                f"No attendance data available for Class {selected_class}."
+            )
+
+    else:
+        st.info("No class data available.")
+
+finally:
+    db.close()
 # =========================================================
 # STUDENT SEARCH
 # =========================================================
@@ -889,13 +1301,15 @@ def get_attendance(student_name: str) -> str:
 
     try:
         student = (
-            db.query(Student)
-            .filter(
-                func.lower(Student.name)
-                == student_name.strip().lower()
-            )
-            .first()
-        )
+         db.query(Student)
+        .filter(
+        func.lower(Student.name)
+        == student_name.strip().lower(),
+        Student.school_code
+        == st.session_state.school_code
+    )
+        .first()
+)
 
         if not student:
             return (
