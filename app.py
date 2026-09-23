@@ -1,4 +1,270 @@
 import streamlit as st
+# =========================================================
+# 🎨 SCHOOL AI - MODERN UI THEME
+# =========================================================
+
+st.set_page_config(
+    page_title="SchoolAI",
+    page_icon="🏫",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+
+/* ================================
+   SCHOOL AI - PREMIUM UI
+================================ */
+
+.stApp {
+    background: #f6f8fc;
+}
+
+/* Main content */
+.block-container {
+    max-width: 1450px;
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+/* ================================
+   SIDEBAR
+================================ */
+
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #111827 0%, #172554 100%);
+    border-right: 1px solid rgba(255,255,255,0.08);
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 1.5rem;
+}
+
+[data-testid="stSidebar"] * {
+    color: #f8fafc;
+}
+
+/* Sidebar headings */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: white !important;
+    font-weight: 700;
+}
+
+/* Sidebar buttons */
+[data-testid="stSidebar"] .stButton > button {
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.08);
+    color: white;
+    font-weight: 600;
+    transition: 0.2s;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+    background: rgba(255,255,255,0.16);
+    border-color: rgba(255,255,255,0.25);
+}
+
+/* Sidebar success box */
+[data-testid="stSidebar"] [data-testid="stAlert"] {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+}
+
+/* ================================
+   HEADER
+================================ */
+
+h1 {
+    font-size: 2.4rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -1px;
+}
+
+h2 {
+    font-weight: 750 !important;
+}
+
+h3 {
+    font-weight: 700 !important;
+}
+
+/* ================================
+   METRIC CARDS
+================================ */
+
+[data-testid="stMetric"] {
+    background: white;
+    padding: 22px 20px;
+    border-radius: 18px;
+    border: 1px solid #e6eaf0;
+    box-shadow: 0 5px 18px rgba(15,23,42,0.06);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+[data-testid="stMetric"]:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 25px rgba(15,23,42,0.10);
+}
+
+[data-testid="stMetricLabel"] {
+    font-weight: 600;
+    color: #64748b;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 2rem;
+    font-weight: 800;
+    color: #0f172a;
+}
+
+/* ================================
+   CARDS / CONTAINERS
+================================ */
+
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 18px;
+    border: 1px solid #e5e7eb;
+    background: white;
+    box-shadow: 0 5px 18px rgba(15,23,42,0.05);
+}
+
+/* ================================
+   BUTTONS
+================================ */
+
+.stButton > button {
+    border-radius: 10px;
+    min-height: 42px;
+    font-weight: 650;
+    border: 1px solid #dbe2ea;
+    transition: all 0.2s ease;
+}
+
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 5px 14px rgba(15,23,42,0.10);
+}
+
+/* ================================
+   INPUTS
+================================ */
+
+.stTextInput input,
+.stTextArea textarea {
+    border-radius: 10px;
+    border: 1px solid #dbe2ea;
+    background: white;
+}
+
+[data-baseweb="select"] > div {
+    border-radius: 10px;
+}
+
+/* ================================
+   TABLE
+================================ */
+
+[data-testid="stDataFrame"] {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 14px rgba(15,23,42,0.04);
+}
+
+/* ================================
+   ALERTS
+================================ */
+
+[data-testid="stAlert"] {
+    border-radius: 12px;
+}
+
+/* ================================
+   DIVIDERS
+================================ */
+
+hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 1.5rem 0;
+}
+
+/* ================================
+   CHART AREA
+================================ */
+
+[data-testid="stVegaLiteChart"],
+[data-testid="stArrowVegaLiteChart"] {
+    background: white;
+    border-radius: 16px;
+    padding: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* ================================
+   FILE UPLOADER
+================================ */
+
+[data-testid="stFileUploader"] {
+    border-radius: 14px;
+}
+
+/* ================================
+   CHAT
+================================ */
+
+[data-testid="stChatMessage"] {
+    border-radius: 14px;
+    margin-bottom: 8px;
+}
+
+/* ================================
+   LOGIN PAGE
+================================ */
+
+.login-title {
+    text-align: center;
+    font-size: 46px;
+    font-weight: 800;
+    color: #172554;
+    margin-top: 45px;
+}
+
+.login-subtitle {
+    text-align: center;
+    font-size: 18px;
+    color: #64748b;
+    margin-bottom: 30px;
+}
+
+/* ================================
+   MOBILE
+================================ */
+
+@media (max-width: 768px) {
+
+    .block-container {
+        padding: 1rem;
+    }
+
+    h1 {
+        font-size: 1.8rem !important;
+    }
+
+    [data-testid="stMetric"] {
+        padding: 15px;
+    }
+
+}
+
+</style>
+""", unsafe_allow_html=True)
 import time
 import time
 from datetime import date, datetime, timedelta
@@ -53,6 +319,7 @@ defaults = {
     "just_logged_out": False,
     "user_name": "",
     "failed_attempts": 0,
+        "current_page": "Dashboard",
     "locked_until": 0.0,
     "messages": [],
     "school_code": "",
@@ -373,7 +640,19 @@ except Exception as e:
 # =========================================================
 
 with st.sidebar:
-    st.header("🎓 School AI")
+    st.markdown(
+    """
+    <div style="
+        font-size:26px;
+        font-weight:800;
+        color:white;
+        margin-bottom:20px;
+    ">
+        🎓 School AI
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
     st.success(
         f"🏫 {st.session_state.school_name}"
@@ -389,22 +668,83 @@ with st.sidebar:
     st.caption(
     f"🎭 Role: {st.session_state.role.title()}"
 )
+ # =========================================================
+# ✨ SIDEBAR FEATURES
+# =========================================================
+
+st.sidebar.divider()
+
+st.sidebar.markdown(
+    """
+    <div style="
+        font-size:18px;
+        font-weight:700;
+        margin-bottom:12px;
+        color:white;
+    ">
+        
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
+
+
+
+
+
+# =========================================================
+# ✨ FEATURES NAVIGATION
+# =========================================================
+
+st.sidebar.markdown("### ✨ Features")
+
+if st.sidebar.button("🏠 Dashboard", use_container_width=True):
+    st.session_state.current_page = "Dashboard"
+    st.rerun()
+
+if st.sidebar.button("✅ Student Attendance", use_container_width=True):
+    st.session_state.current_page = "Attendance"
+    st.rerun()
+
+if st.sidebar.button("📊 Attendance Analytics", use_container_width=True):
+    st.session_state.current_page = "Analytics"
+    st.rerun()
+
+if st.sidebar.button("🔎 Student Search", use_container_width=True):
+    st.session_state.current_page = "Search"
+    st.rerun()
+
+if st.sidebar.button("🤖 AI Assistant", use_container_width=True):
+    st.session_state.current_page = "AI"
+    st.rerun()
+
+if st.session_state.role == "principal":
+    if st.sidebar.button("🔐 Login Protection", use_container_width=True):
+        st.session_state.current_page = "Security"
+        st.rerun()
+
+
+
+
+# =========================================================
+# 📁 UPLOAD STUDENT CSV
+# =========================================================
+
+st.sidebar.divider()
+
 if st.session_state.role == "principal":
 
-    st.sidebar.divider()
-
-    st.sidebar.subheader("📂 Upload Student CSV")
+    st.sidebar.subheader("📁 Upload Student CSV")
 
     uploaded_file = st.sidebar.file_uploader(
         "Choose CSV file",
         type=["csv"]
     )
 
-    if uploaded_file is not None:
-
-        st.sidebar.success("✅ CSV file selected")
-
-        if st.sidebar.button("📥 Import CSV to this School"):
+    
+    if st.sidebar.button("📥 Import CSV to this School"):
 
             try:
                 import pandas as pd
@@ -529,19 +869,7 @@ if st.session_state.role == "principal":
                 )
     
 
-    st.subheader("✨ Features")
-if st.session_state.role == "principal":
-    st.write("✅ Student Attendance")
-    st.write("📊 Attendance Analytics")
-    st.write("🔎 Student Search")
-    st.write("🤖 AI Assistant")
-    st.write("🔐 Login Protection")
-
-elif st.session_state.role == "teacher":
-    st.write("✅ Student Attendance")
-    st.write("🔎 Student Search")
-    st.write("🤖 AI Assistant")
-
+   
     st.divider()
 
     st.info(
@@ -568,13 +896,31 @@ if st.sidebar.button("🚪 Logout"):
 # HEADER
 # =========================================================
 
-st.title("🎓 School AI Assistant")
+st.markdown("""
+<div style="background:linear-gradient(135deg,#172554,#2563eb);
+padding:28px 32px;border-radius:20px;margin-bottom:25px;
+box-shadow:0 10px 30px rgba(37,99,235,0.18);">
 
-st.caption(
-    f"Welcome to {st.session_state.school_name} 👋"
-)
+<div style="color:#bfdbfe;font-size:14px;font-weight:600;margin-bottom:6px;">
+🏫 SCHOOL MANAGEMENT DASHBOARD
+</div>
 
-st.divider()
+<div style="color:white;font-size:32px;font-weight:800;margin-bottom:8px;">
+🎓 School AI Assistant
+</div>
+
+<div style="color:#dbeafe;font-size:16px;">
+Welcome back 👋 &nbsp; • &nbsp; Smart attendance & student management
+</div>
+
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div style="font-size:22px;font-weight:750;color:#0f172a;margin:10px 0 16px 0;">
+
+</div>
+""", unsafe_allow_html=True)
 
 
 # =========================================================
@@ -1008,7 +1354,7 @@ finally:
 # =========================================================
 
 st.subheader("🔎 Student Overview")
-
+display_rows = []
 if student_rows:
     student_names = sorted(
         x["name"] for x in student_rows
@@ -1141,16 +1487,17 @@ if st.session_state.role == "principal" and student_rows:
 
             finally:
                 db.close()
-
 # =========================================================
 # ALL STUDENTS
 # =========================================================
 
 st.subheader("📋 All Students")
+
 search_name = st.text_input(
     "🔎 Search Student",
     placeholder="Enter student name"
 )
+
 class_options = sorted(
     {str(x["class"]) for x in student_rows}
 )
@@ -1159,6 +1506,7 @@ selected_class = st.selectbox(
     "🏫 Select Class",
     ["All"] + class_options
 )
+
 division_options = sorted(
     {str(x["division"]) for x in student_rows}
 )
@@ -1167,43 +1515,71 @@ selected_division = st.selectbox(
     "🏷️ Select Division",
     ["All"] + division_options
 )
+
 gender_options = sorted(
-    {str(x["gender"]) for x in student_rows}
+    {str(x.get("gender") or "") for x in student_rows}
 )
 
 selected_gender = st.selectbox(
     "⚥ Select Gender",
     ["All"] + gender_options
 )
+
+
+# =========================================================
+# FILTER STUDENTS
+# =========================================================
+
+# IMPORTANT:
+# Define this BEFORE using display_rows anywhere below.
+display_rows = []
+
+filtered_students = []
+
 if student_rows:
-    display_rows = []
 
     filtered_students = [
-        x for x in student_rows
-        if search_name.lower() in x["name"].lower()
+        x
+        for x in student_rows
+        if (
+            search_name.strip().lower()
+            in x["name"].lower()
+        )
         and (
-        selected_class == "All"
-        or str(x["class"]) == selected_class
-    )and (
-    selected_division == "All"
-    or str(x["division"]) == selected_division
-) and (
-    selected_gender == "All"
-    or str(x.get("gender") or "") == selected_gender
-)
+            selected_class == "All"
+            or str(x["class"]) == selected_class
+        )
+        and (
+            selected_division == "All"
+            or str(x["division"]) == selected_division
+        )
+        and (
+            selected_gender == "All"
+            or str(x.get("gender") or "") == selected_gender
+        )
     ]
 
     for x in filtered_students:
-        display_rows.append({
 
-        "Student": x["name"],
-            "Gender": x["gender"],
+        display_rows.append({
+            "Student": x["name"],
+            "Gender": x.get("gender") or "",
             "Class": x["class"],
             "Division": x["division"],
             "Total Days": x["total_days"],
             "Present Days": x["present_days"],
-            "Attendance %": round(x["attendance_percentage"], 1),
+            "Attendance %": round(
+                x["attendance_percentage"],
+                1
+            ),
         })
+
+
+# =========================================================
+# DISPLAY FILTERED STUDENTS
+# =========================================================
+
+if display_rows:
 
     st.dataframe(
         display_rows,
@@ -1211,59 +1587,136 @@ if student_rows:
         hide_index=True
     )
 
+else:
+
+    st.info("ℹ️ No students found for the selected filters.")
+
+
+# =========================================================
+# CLASS-WISE ATTENDANCE CHART
+# =========================================================
 
 st.divider()
-# Class-wise Attendance Chart
+
 if display_rows:
+
     chart_data = {}
 
     for row in display_rows:
+
         class_name = row["Class"]
-        chart_data[class_name] = row["Attendance %"]
+
+        if class_name not in chart_data:
+            chart_data[class_name] = []
+
+        chart_data[class_name].append(
+            row["Attendance %"]
+        )
+
+    # Calculate average attendance for each class
+    class_average = {}
+
+    for class_name, values in chart_data.items():
+
+        if values:
+            class_average[class_name] = (
+                sum(values) / len(values)
+            )
 
     st.subheader("📊 Class-wise Attendance")
-    st.bar_chart(chart_data)
+
+    st.bar_chart(class_average)
+
+
+# =========================================================
+# ATTENDANCE SUMMARY
+# =========================================================
 
 st.divider()
-# Attendance Summary
+
 if display_rows:
+
     total_students = len(display_rows)
-    total_days = sum(row["Total Days"] for row in display_rows)
-    present_days = sum(row["Present Days"] for row in display_rows)
+
+    total_days = sum(
+        row["Total Days"]
+        for row in display_rows
+    )
+
+    present_days = sum(
+        row["Present Days"]
+        for row in display_rows
+    )
 
     overall_attendance = (
         (present_days / total_days) * 100
-        if total_days > 0 else 0
+        if total_days > 0
+        else 0
     )
 
     st.subheader("📌 Attendance Summary")
 
     col1, col2, col3, col4 = st.columns(4)
 
-    col1.metric("👨‍🎓 Total Students", total_students)
-    col2.metric("📅 Total Days", total_days)
-    col3.metric("✅ Present Days", present_days)
-    col4.metric("📊 Overall Attendance", f"{overall_attendance:.1f}%")
+    col1.metric(
+        "👨‍🎓 Total Students",
+        total_students
+    )
 
-# Low Attendance Alert
+    col2.metric(
+        "📅 Total Days",
+        total_days
+    )
+
+    col3.metric(
+        "✅ Present Days",
+        present_days
+    )
+
+    col4.metric(
+        "📊 Overall Attendance",
+        f"{overall_attendance:.1f}%"
+    )
+
+
+# =========================================================
+# LOW ATTENDANCE ALERT
+# =========================================================
+
 low_attendance = [
-    row for row in display_rows
+    row
+    for row in display_rows
     if row["Attendance %"] < 80
 ]
 
 if low_attendance:
+
     st.warning(
-        f"⚠️ {len(low_attendance)} student(s) have attendance below 80%."
+        f"⚠️ {len(low_attendance)} student(s) "
+        "have attendance below 80%."
     )
+
 else:
-    st.success("✅ All students have attendance of 80% or above.")
-# Low Attendance Students
+
+    if display_rows:
+        st.success(
+            "✅ All students have attendance "
+            "of 80% or above."
+        )
+
+
+# =========================================================
+# LOW ATTENDANCE STUDENTS
+# =========================================================
+
 if low_attendance:
+
     st.subheader("⚠️ Low Attendance Students")
 
     low_rows = []
 
     for row in low_attendance:
+
         low_rows.append({
             "Student": row["Student"],
             "Class": row["Class"],
@@ -1275,9 +1728,15 @@ if low_attendance:
         low_rows,
         width="stretch",
         hide_index=True
-    )    
-# Download Low Attendance Report
+    )
+
+
+# =========================================================
+# DOWNLOAD LOW ATTENDANCE REPORT
+# =========================================================
+
 if low_attendance:
+
     import pandas as pd
 
     download_df = pd.DataFrame(low_rows)
@@ -1287,7 +1746,7 @@ if low_attendance:
         data=download_df.to_csv(index=False),
         file_name="low_attendance_report.csv",
         mime="text/csv"
-    )    
+    )
 
 # =========================================================
 # AI TOOL
