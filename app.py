@@ -287,6 +287,9 @@ import json
 import hmac
 import hashlib
 import base64
+import re
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 
@@ -326,6 +329,13 @@ defaults = {
     "username": "",
     "role": "",
     "user_id": None,
+    "otp_pending": False,
+    "otp_user_id": None,
+    "otp_hash": "",
+    "otp_expires_at": 0.0,
+    "otp_attempts": 0,
+    "otp_last_sent_at": 0.0,
+    "otp_phone": "",
 }
 
 for key, value in defaults.items():
@@ -365,6 +375,12 @@ def clear_login():
             False if field == "logged_in" else None if field == "user_id" else ""
         )
     st.session_state.current_page = "Dashboard"
+    for key, value in {
+        "otp_pending": False, "otp_user_id": None, "otp_hash": "",
+        "otp_expires_at": 0.0, "otp_attempts": 0, "otp_last_sent_at": 0.0,
+        "otp_phone": "", "otp_test_value": ""
+    }.items():
+        st.session_state[key] = value
 
 
 # =========================================================
@@ -403,42 +419,428 @@ SCHOOL_NAME = os.getenv("SCHOOL_NAME", "School AI Academy")
 
 
 # =========================================================
+# PRINCIPAL OTP HELPERS
+# =========================================================
+
+OTP_EXPIRY_SECONDS = 5 * 60
+OTP_MAX_ATTEMPTS = 5
+OTP_RESEND_SECONDS = 30
+
+
+def otp_test_mode():
+    return os.getenv("OTP_TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def otp_sms_is_configured():
+    return all(os.getenv(k) for k in (
+        "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"
+    ))
+
+
+def send_otp_sms(number: str, otp: str):
+    """Send OTP with Twilio. In OTP_TEST_MODE no external SMS is sent."""
+    if otp_test_mode():
+        return "TEST_MODE"
+
+    if not otp_sms_is_configured():
+        raise RuntimeError(
+            "OTP SMS is not configured. Add TWILIO_ACCOUNT_SID, "
+            "TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER to .env, "
+            "or use OTP_TEST_MODE=1 while testing."
+        )
+
+    sid = os.environ["TWILIO_ACCOUNT_SID"]
+    token = os.environ["TWILIO_AUTH_TOKEN"]
+    sender = os.environ["TWILIO_FROM_NUMBER"]
+    auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
+    body = f"Your School AI login OTP is {otp}. It expires in 5 minutes. Do not share it."
+    request = Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+        data=urlencode({"To": number, "From": sender, "Body": body}).encode(),
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+        return payload.get("sid", "SENT")
+
+
+def hash_otp(otp: str) -> str:
+    secret = os.getenv("OTP_HASH_SECRET", os.getenv("SESSION_SECRET", "change-this-secret"))
+    return hmac.new(secret.encode("utf-8"), otp.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def create_authenticated_session(user):
+    """Create the 15-minute application session after authentication is complete."""
+    st.session_state.just_logged_out = False
+    st.session_state.logged_in = True
+    st.session_state.school_code = user.school_code
+    st.session_state.school_name = user.school_code
+    st.session_state.username = user.username
+    st.session_state.user_id = user.user_id
+    st.session_state.user_name = user.name
+    st.session_state.role = user.role
+    st.session_state.current_page = "Dashboard"
+    st.session_state.failed_attempts = 0
+    st.session_state.locked_until = 0.0
+
+    token = secrets.token_urlsafe(32)
+    store = session_store()
+    with store["lock"]:
+        store["sessions"][token] = {
+            "expires_at": time.time() + SESSION_SECONDS,
+            "school_code": user.school_code,
+            "school_name": user.school_code,
+            "username": user.username,
+            "user_id": user.user_id,
+            "user_name": user.name,
+            "role": user.role,
+        }
+    st.query_params[SESSION_PARAM] = token
+
+
+def start_principal_otp(user):
+    phone = (getattr(user, "phone", "") or "").strip()
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise RuntimeError(
+            "Principal mobile number is missing or invalid. Use format +919876543210."
+        )
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    send_otp_sms(phone, otp)
+    st.session_state.otp_pending = True
+    st.session_state.otp_user_id = user.user_id
+    st.session_state.otp_hash = hash_otp(otp)
+    st.session_state.otp_expires_at = time.time() + OTP_EXPIRY_SECONDS
+    st.session_state.otp_attempts = 0
+    st.session_state.otp_last_sent_at = time.time()
+    st.session_state.otp_phone = phone
+    if otp_test_mode():
+        st.session_state.otp_test_value = otp
+
+
+def clear_otp_state():
+    for key, value in {
+        "otp_pending": False,
+        "otp_user_id": None,
+        "otp_hash": "",
+        "otp_expires_at": 0.0,
+        "otp_attempts": 0,
+        "otp_last_sent_at": 0.0,
+        "otp_phone": "",
+        "otp_test_value": "",
+    }.items():
+        st.session_state[key] = value
+
+
+def masked_phone(phone: str) -> str:
+    if len(phone) <= 6:
+        return phone
+    return phone[:3] + "******" + phone[-4:]
+
+
+def render_otp_page():
+    st.markdown("## 🔐 Principal OTP Verification")
+    st.caption(f"OTP sent to {masked_phone(st.session_state.otp_phone)}")
+
+    if otp_test_mode() and st.session_state.get("otp_test_value"):
+        st.info(f"Testing OTP: {st.session_state.otp_test_value}")
+
+    otp_input = st.text_input("Enter 6-digit OTP", max_chars=6, key="principal_otp_input")
+    verify_col, resend_col, cancel_col = st.columns(3)
+
+    if verify_col.button("Verify OTP", type="primary", use_container_width=True):
+        if time.time() > st.session_state.otp_expires_at:
+            st.error("OTP expired. Please resend a new OTP.")
+        elif st.session_state.otp_attempts >= OTP_MAX_ATTEMPTS:
+            st.error("Too many wrong OTP attempts. Please resend a new OTP.")
+        elif not re.fullmatch(r"\d{6}", otp_input.strip()):
+            st.error("Enter the 6-digit OTP.")
+        elif not hmac.compare_digest(hash_otp(otp_input.strip()), st.session_state.otp_hash):
+            st.session_state.otp_attempts += 1
+            remaining = OTP_MAX_ATTEMPTS - st.session_state.otp_attempts
+            st.error(f"Incorrect OTP. {remaining} attempt(s) remaining.")
+        else:
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.user_id == st.session_state.otp_user_id).first()
+                if not user:
+                    st.error("User account not found.")
+                    return
+                user.phone_verified = 1
+                db.commit()
+                clear_otp_state()
+                create_authenticated_session(user)
+                st.success("✅ OTP verified. Login successful!")
+                st.rerun()
+            finally:
+                db.close()
+
+    if resend_col.button("Resend OTP", use_container_width=True):
+        wait = OTP_RESEND_SECONDS - int(time.time() - st.session_state.otp_last_sent_at)
+        if wait > 0:
+            st.warning(f"Please wait {wait} seconds before resending.")
+        else:
+            db = SessionLocal()
+            try:
+                user = db.query(User).filter(User.user_id == st.session_state.otp_user_id).first()
+                if not user:
+                    st.error("User account not found.")
+                    return
+                start_principal_otp(user)
+                st.success("New OTP sent.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+            finally:
+                db.close()
+
+    if cancel_col.button("Cancel", use_container_width=True):
+        clear_otp_state()
+        st.rerun()
+
+
+# =========================================================
 # LOGIN PAGE
 # =========================================================
 
 def login_page():
     st.markdown("""
     <style>
-    [data-testid="stSidebar"], [data-testid="collapsedControl"] {display: none;}
-    .stApp {background: radial-gradient(circle at 12% 10%, #dbeafe 0, transparent 34%),
-            radial-gradient(circle at 90% 85%, #ccfbf1 0, transparent 31%), #f4f7fc;}
-    .block-container {max-width: 1160px; padding-top: 6vh; padding-bottom: 2rem;}
-    .school-hero {min-height: 485px; padding: 42px 38px; border-radius: 26px;
-        background: linear-gradient(145deg, #0f172a, #172554 55%, #1d4ed8);
-        box-shadow: 0 22px 50px rgba(23,37,84,.22); color: white;
-        position: relative; overflow: hidden;}
-    .school-hero:after {content: ""; position: absolute; width: 290px; height: 290px;
-        border-radius: 50%; right: -110px; top: -90px; border: 48px solid rgba(255,255,255,.06);}
-    .hero-brand {font-size: 18px; font-weight: 800; letter-spacing: .03em; color: #bfdbfe;}
-    .hero-icon {font-size: 57px; margin: 56px 0 8px;}
-    .hero-title {font-size: clamp(32px, 3.5vw, 47px); line-height: 1.14;
-        letter-spacing: -.035em; font-weight: 850; max-width: 450px;}
-    .hero-copy {font-size: 17px; line-height: 1.65; color: #dbeafe; max-width: 425px; margin-top: 18px;}
-    .hero-tags {margin-top: 38px; display: flex; flex-wrap: wrap; gap: 9px;}
-    .hero-tags span {background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.17);
-        padding: 8px 12px; border-radius: 100px; font-size: 13px; color: #eff6ff;}
-    .login-intro {margin: 32px 0 24px;}
-    .login-eyebrow {color: #2563eb; font-size: 13px; font-weight: 800; letter-spacing: .11em;}
-    .login-heading {font-size: 35px; font-weight: 850; color: #0f172a; margin: 9px 0 7px;}
-    .login-detail {font-size: 15px; color: #64748b; line-height: 1.6;}
-    .login-foot {text-align: center; color: #64748b; font-size: 13px; margin-top: 32px;}
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] {display: none !important;}
+
+    .stApp {
+        background:
+            radial-gradient(circle at 10% 12%, rgba(59,130,246,.26), transparent 28%),
+            radial-gradient(circle at 88% 16%, rgba(168,85,247,.18), transparent 30%),
+            radial-gradient(circle at 82% 88%, rgba(20,184,166,.20), transparent 28%),
+            linear-gradient(135deg, #eef4ff 0%, #f8fbff 42%, #effcf8 100%);
+        min-height: 100vh;
+    }
+
+    .stApp:before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+            linear-gradient(rgba(30,64,175,.035) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(30,64,175,.035) 1px, transparent 1px);
+        background-size: 34px 34px;
+        mask-image: linear-gradient(to bottom, rgba(0,0,0,.55), transparent 85%);
+    }
+
+    .block-container {
+        max-width: 1180px;
+        padding-top: 5vh;
+        padding-bottom: 2rem;
+    }
+
+    .school-hero {
+        min-height: 560px;
+        padding: 48px 42px;
+        border-radius: 32px;
+        color: white;
+        position: relative;
+        overflow: hidden;
+        background:
+            radial-gradient(circle at 85% 15%, rgba(96,165,250,.42), transparent 27%),
+            radial-gradient(circle at 12% 88%, rgba(45,212,191,.22), transparent 28%),
+            linear-gradient(145deg, #0b1220 0%, #172554 48%, #1d4ed8 100%);
+        box-shadow: 0 30px 70px rgba(23,37,84,.30);
+        border: 1px solid rgba(255,255,255,.14);
+    }
+
+    .school-hero:before {
+        content: "";
+        position: absolute;
+        width: 330px;
+        height: 330px;
+        border-radius: 50%;
+        right: -135px;
+        top: -110px;
+        border: 52px solid rgba(255,255,255,.055);
+    }
+
+    .school-hero:after {
+        content: "";
+        position: absolute;
+        width: 190px;
+        height: 190px;
+        border-radius: 50%;
+        left: -85px;
+        bottom: -95px;
+        background: rgba(45,212,191,.10);
+        border: 1px solid rgba(255,255,255,.10);
+    }
+
+    .hero-brand {
+        position: relative;
+        z-index: 2;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        font-weight: 850;
+        letter-spacing: .11em;
+        color: #dbeafe;
+        background: rgba(255,255,255,.09);
+        border: 1px solid rgba(255,255,255,.14);
+        padding: 9px 13px;
+        border-radius: 999px;
+    }
+
+    .hero-icon {
+        position: relative;
+        z-index: 2;
+        font-size: 68px;
+        margin: 58px 0 10px;
+        filter: drop-shadow(0 10px 22px rgba(0,0,0,.18));
+    }
+
+    .hero-title {
+        position: relative;
+        z-index: 2;
+        font-size: clamp(34px, 3.6vw, 50px);
+        line-height: 1.12;
+        letter-spacing: -.04em;
+        font-weight: 900;
+        max-width: 470px;
+    }
+
+    .hero-copy {
+        position: relative;
+        z-index: 2;
+        font-size: 16px;
+        line-height: 1.75;
+        color: #dbeafe;
+        max-width: 440px;
+        margin-top: 19px;
+    }
+
+    .hero-tags {
+        position: relative;
+        z-index: 2;
+        margin-top: 42px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .hero-tags span {
+        background: rgba(255,255,255,.10);
+        border: 1px solid rgba(255,255,255,.16);
+        padding: 9px 13px;
+        border-radius: 999px;
+        font-size: 13px;
+        color: #eff6ff;
+        backdrop-filter: blur(7px);
+    }
+
+    .login-intro {margin: 16px 0 20px;}
+    .login-eyebrow {
+        color: #2563eb;
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: .14em;
+    }
+    .login-heading {
+        font-size: 38px;
+        font-weight: 900;
+        color: #0f172a;
+        letter-spacing: -.035em;
+        margin: 8px 0 8px;
+    }
+    .login-detail {
+        font-size: 15px;
+        color: #64748b;
+        line-height: 1.65;
+        max-width: 470px;
+    }
+
+    [data-testid="stTabs"] {
+        background: rgba(255,255,255,.72);
+        border: 1px solid rgba(148,163,184,.24);
+        box-shadow: 0 24px 55px rgba(15,23,42,.12);
+        border-radius: 24px;
+        padding: 14px 14px 18px;
+        backdrop-filter: blur(16px);
+    }
+
+    [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: #eef2ff;
+        padding: 6px;
+        border-radius: 14px;
+        margin-bottom: 14px;
+    }
+
+    [data-baseweb="tab"] {
+        flex: 1;
+        justify-content: center;
+        min-height: 46px;
+        border-radius: 10px !important;
+        font-weight: 750 !important;
+        color: #475569 !important;
+    }
+
+    [data-baseweb="tab"][aria-selected="true"] {
+        background: white !important;
+        color: #1d4ed8 !important;
+        box-shadow: 0 5px 16px rgba(30,64,175,.12);
+    }
+
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 18px !important;
+        border: 1px solid #e5e7eb !important;
+        background: rgba(255,255,255,.78) !important;
+        box-shadow: none !important;
+    }
+
+    .stTextInput input {
+        min-height: 48px;
+        border-radius: 12px !important;
+        border: 1px solid #dbe2ea !important;
+        background: rgba(255,255,255,.94) !important;
+    }
+
+    .stTextInput input:focus {
+        border-color: #60a5fa !important;
+        box-shadow: 0 0 0 3px rgba(59,130,246,.12) !important;
+    }
+
+    .stButton > button[kind="primary"] {
+        min-height: 49px;
+        border: 0 !important;
+        border-radius: 12px !important;
+        font-weight: 850 !important;
+        background: linear-gradient(90deg, #2563eb, #4f46e5) !important;
+        box-shadow: 0 10px 22px rgba(37,99,235,.25) !important;
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 14px 28px rgba(37,99,235,.30) !important;
+    }
+
+    .login-foot {
+        text-align: center;
+        color: #64748b;
+        font-size: 12px;
+        margin-top: 24px;
+        letter-spacing: .02em;
+    }
+
     @media (max-width: 768px) {
-        .block-container {padding-top: 1rem;}
-        .school-hero {min-height: 0; padding: 26px;}
-        .hero-icon {margin: 18px 0 4px; font-size: 40px;}
-        .hero-title {font-size: 30px;}
-        .hero-tags {margin-top: 18px;}
-        .login-intro {margin: 18px 0;}
+        .block-container {padding: 1rem .85rem 2rem;}
+        .school-hero {min-height: 0; padding: 28px; border-radius: 24px;}
+        .hero-icon {margin: 22px 0 8px; font-size: 46px;}
+        .hero-title {font-size: 31px;}
+        .hero-copy {font-size: 14px;}
+        .hero-tags {margin-top: 22px;}
+        .login-heading {font-size: 31px;}
+        [data-testid="stTabs"] {border-radius: 20px; padding: 10px 10px 14px;}
     }
     </style>
     """, unsafe_allow_html=True)
@@ -447,107 +849,151 @@ def login_page():
     with hero:
         st.markdown("""
         <div class="school-hero">
-            <div class="hero-brand">✦ SCHOOL AI</div>
+            <div class="hero-brand">✦ SCHOOL AI · SECURE PORTAL</div>
             <div class="hero-icon">🏫</div>
-            <div class="hero-title">A smarter way to care for every student.</div>
-            <div class="hero-copy">Attendance records, class insights and student information in one simple school workspace.</div>
-            <div class="hero-tags"><span>✓ Attendance</span><span>▥ Analytics</span><span>✦ AI Assistant</span></div>
+            <div class="hero-title">Smart school access, built for everyday work.</div>
+            <div class="hero-copy">Attendance, parent communication, analytics and AI support in one secure school workspace.</div>
+            <div class="hero-tags"><span>✓ Attendance</span><span>📨 Parent Alerts</span><span>▥ Analytics</span><span>✦ AI Assistant</span></div>
         </div>
         """, unsafe_allow_html=True)
 
     with form:
         st.markdown("""
         <div class="login-intro">
-            <div class="login-eyebrow">WELCOME BACK</div>
-            <div class="login-heading">Sign in to School AI</div>
-            <div class="login-detail">Enter your school account details to open your dashboard.</div>
+            <div class="login-eyebrow">SECURE SCHOOL ACCESS</div>
+            <div class="login-heading">Welcome to School AI</div>
+            <div class="login-detail">Choose Sign in for existing accounts or Principal Registration to create a secured principal account.</div>
         </div>
         """, unsafe_allow_html=True)
-        with st.container(border=True):
-            username = st.text_input("Username", placeholder="Your username", key="login_username")
-            password = st.text_input("Password", type="password", placeholder="Your password", key="login_password")
-            login_clicked = st.button("Sign in →", type="primary", use_container_width=True)
 
-            if login_clicked:
-                now = time.time()
+        signin_tab, register_tab = st.tabs(["🔐 Sign in", "📝 Principal Registration"])
 
-                if now < st.session_state.locked_until:
-                    remaining = int(
-                        st.session_state.locked_until - now
-                    )
-                    minutes = remaining // 60
-                    seconds = remaining % 60
+        with signin_tab:
+            with st.container(border=True):
+                username = st.text_input("Username", placeholder="Your username", key="login_username")
+                password = st.text_input("Password", type="password", placeholder="Your password", key="login_password")
+                login_clicked = st.button("Sign in →", type="primary", use_container_width=True, key="login_submit")
 
-                    st.error(
-                        f"🔒 Too many failed attempts. "
-                        f"Try again in {minutes}m {seconds}s."
-                    )
-                    return
+                if login_clicked:
+                    now = time.time()
 
-                db = SessionLocal()
-                user = db.query(User).filter(    
-                    User.username == username.strip()
-                    ).first()
-                valid_login = False
-                if user:
-                    valid_login = verify_password(
-                    password,
-                    user.password_hash
-                 )
-                db.close()   
+                    if now < st.session_state.locked_until:
+                        remaining = int(st.session_state.locked_until - now)
+                        minutes = remaining // 60
+                        seconds = remaining % 60
+                        st.error(f"🔒 Too many failed attempts. Try again in {minutes}m {seconds}s.")
+                        return
 
-                if valid_login: 
-                    st.session_state.just_logged_out = False
-                    st.session_state.logged_in = True
-                    st.session_state.school_code = user.school_code
-                    st.session_state.school_name = user.school_code
-                    st.session_state.username = user.username
-                    st.session_state.user_id = user.user_id
-                    st.session_state.user_name = user.name
-                    st.session_state.role = user.role
-                    st.session_state.current_page = "Dashboard"
-                    st.session_state.failed_attempts = 0
-                    st.session_state.locked_until = 0.0
+                    db = SessionLocal()
+                    try:
+                        user = db.query(User).filter(User.username == username.strip()).first()
+                        valid_login = bool(user) and verify_password(password, user.password_hash)
+                    finally:
+                        db.close()
 
-                    token = secrets.token_urlsafe(32)
-                    store = session_store()
-                    with store["lock"]:
-                        store["sessions"][token] = {
-                            "expires_at": time.time() + SESSION_SECONDS,
-                            "school_code": user.school_code,
-                            "school_name": user.school_code,
-                            "username": user.username,
-                            "user_id": user.user_id,
-                            "user_name": user.name,
-                            "role": user.role,
-                        }
-                    st.query_params[SESSION_PARAM] = token
-
-                    st.success("✅ Login successful!")
-                    st.rerun()
-
-                else:
-                    st.session_state.failed_attempts += 1
-
-                    attempts_left = (
-                        MAX_LOGIN_ATTEMPTS
-                        - st.session_state.failed_attempts
-                    )
-
-                    if attempts_left <= 0:
-                        st.session_state.locked_until = (
-                            time.time() + LOCKOUT_SECONDS
-                        )
-
-                        st.error(
-                            "🔒 Too many failed password attempts. "
-                            "Login is locked for 5 minutes."
-                        )
+                    if valid_login:
+                        if str(user.role).strip().lower() == "principal":
+                            try:
+                                start_principal_otp(user)
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not send OTP: {exc}")
+                        else:
+                            create_authenticated_session(user)
+                            st.success("✅ Login successful!")
+                            st.rerun()
                     else:
-                        st.error(
-                            f"❌ Invalid username or password. "
-                            f"{attempts_left} attempt(s) remaining."
-                        )
+                        st.session_state.failed_attempts += 1
+                        attempts_left = MAX_LOGIN_ATTEMPTS - st.session_state.failed_attempts
+                        if attempts_left <= 0:
+                            st.session_state.locked_until = time.time() + LOCKOUT_SECONDS
+                            st.error("🔒 Too many failed password attempts. Login is locked for 5 minutes.")
+                        else:
+                            st.error(f"❌ Invalid username or password. {attempts_left} attempt(s) remaining.")
+
+        with register_tab:
+            with st.container(border=True):
+                st.caption("Only an authorized school principal should create this account.")
+                reg_name = st.text_input("Principal full name", key="reg_name")
+                reg_username = st.text_input("Create username", key="reg_username")
+                reg_phone = st.text_input("Mobile number", placeholder="+919876543210", key="reg_phone")
+                reg_school_code = st.text_input(
+                    "School code",
+                    value=os.getenv("SCHOOL_CODE", "SCHOOL001"),
+                    key="reg_school_code",
+                )
+                reg_password = st.text_input("Create password", type="password", key="reg_password")
+                reg_confirm = st.text_input("Confirm password", type="password", key="reg_confirm")
+                reg_code = st.text_input("Principal registration code", type="password", key="reg_code")
+                st.caption("The registration code is stored in .env as PRINCIPAL_REGISTRATION_CODE.")
+
+                register_clicked = st.button(
+                    "Create Principal Account →",
+                    type="primary",
+                    use_container_width=True,
+                    key="register_principal_submit",
+                )
+
+                if register_clicked:
+                    configured_code = os.getenv("PRINCIPAL_REGISTRATION_CODE", "").strip()
+                    name = reg_name.strip()
+                    new_username = reg_username.strip()
+                    phone = reg_phone.strip()
+                    school_code = reg_school_code.strip()
+
+                    if not configured_code:
+                        st.error("Principal registration is not enabled. Add PRINCIPAL_REGISTRATION_CODE to .env and restart the app.")
+                    elif not hmac.compare_digest(reg_code.strip(), configured_code):
+                        st.error("Invalid principal registration code.")
+                    elif not name or not new_username or not school_code:
+                        st.error("Name, username and school code are required.")
+                    elif not re.fullmatch(r"[A-Za-z0-9_.-]{4,50}", new_username):
+                        st.error("Username must be 4–50 characters and use only letters, numbers, dot, underscore or hyphen.")
+                    elif not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+                        st.error("Use mobile format like +919876543210.")
+                    elif len(reg_password) < 8:
+                        st.error("Password must be at least 8 characters.")
+                    elif reg_password != reg_confirm:
+                        st.error("Passwords do not match.")
+                    else:
+                        db = SessionLocal()
+                        try:
+                            existing = db.query(User).filter(
+                                func.lower(User.username) == new_username.lower()
+                            ).first()
+                            if existing:
+                                st.error("This username already exists. Choose another username.")
+                            else:
+                                password_hash = bcrypt.hashpw(
+                                    reg_password.encode("utf-8"), bcrypt.gensalt()
+                                ).decode("utf-8")
+                                new_user = User(
+                                    user_id=f"principal-{secrets.token_hex(6)}",
+                                    name=name,
+                                    username=new_username,
+                                    password_hash=password_hash,
+                                    role="principal",
+                                    school_code=school_code,
+                                    phone=phone,
+                                    phone_verified=0,
+                                )
+                                db.add(new_user)
+                                db.commit()
+                                db.refresh(new_user)
+                                try:
+                                    start_principal_otp(new_user)
+                                    st.success("✅ Account created. Verify the OTP to finish registration.")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.warning(
+                                        "Account was created, but OTP could not be sent. "
+                                        f"You can sign in later after fixing OTP settings. Details: {exc}"
+                                    )
+                        except Exception as exc:
+                            db.rollback()
+                            st.error(f"Registration failed: {exc}")
+                        finally:
+                            db.close()
 
     st.markdown('<div class="login-foot">🎓 School AI Assistant · Secure school access</div>', unsafe_allow_html=True)
 
@@ -555,6 +1001,10 @@ def login_page():
 # =========================================================
 # CHECK LOGIN
 # =========================================================
+
+if st.session_state.get("otp_pending"):
+    render_otp_page()
+    st.stop()
 
 token = st.query_params.get(SESSION_PARAM)
 active_session = session_record(token)
