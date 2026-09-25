@@ -1216,6 +1216,45 @@ def get_three_day_absences(school_code):
         db.close()
 
 
+# =========================================================
+# SAFE PARENT ALERT AGENT
+# =========================================================
+
+def safe_parent_alert_agent(school_code):
+    """
+    Safe approval mode:
+    - Reads attendance only
+    - Finds 3-day absences
+    - Creates message drafts
+    - DOES NOT automatically send messages
+    """
+
+    candidates = get_three_day_absences(school_code)
+
+    alerts = []
+
+    for student in candidates:
+
+        phone = (student.get("parent_contact") or "").strip()
+
+        message = (
+            f"Dear Parent, {student['name']} has been absent for "
+            f"three consecutive recorded school days "
+            f"({', '.join(d.strftime('%d %b %Y') for d in student['dates'])}). "
+            f"Please contact Mahatma Gandhi English School."
+        )
+
+        alerts.append({
+            "student_id": student["id"],
+            "student_name": student["name"],
+            "class": student["class"],
+            "division": student["division"],
+            "phone": phone,
+            "message": message,
+            "dates": student["dates"],
+        })
+
+    return alerts
 lesson_plans = Table(
     "lesson_plans", assignment_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -2674,33 +2713,90 @@ if st.session_state.current_page == "Parent Messages":
                 st.info("Write a message to enable the WhatsApp draft.")
     else:
         st.info("Import students to prepare parent messages.")
-    st.divider()
+        st.divider()
     st.subheader("📨 Parents to contact: 3-day absence")
-    st.caption("Based on the latest three dates with recorded attendance for each class. "
-               "Review the attendance and phone number before sending. WhatsApp opens a draft; you press Send.")
+    st.caption(
+        "Based on the latest three dates with recorded attendance for each class. "
+        "Review the attendance and phone number before sending. "
+        "WhatsApp opens a draft; you press Send."
+    )
+
     try:
         from urllib.parse import quote
         import re
-        absence_candidates = get_three_day_absences(st.session_state.school_code)
+
+        absence_candidates = safe_parent_alert_agent(
+            st.session_state.school_code
+        )
+
         if not absence_candidates:
-            st.info("No students with three recorded class days absent in a row.")
-        for candidate in absence_candidates:
-            label = (f"{candidate['name']} · Class {candidate['class']}"
-                     f"{candidate['division'] or ''} · Last recorded {candidate['dates'][-1]:%d %b %Y}")
-            with st.expander(label):
-                st.write("Absent dates: " + ", ".join(d.strftime("%d %b %Y")
-                                                   for d in candidate["dates"]))
-                phone = candidate["parent_contact"].strip()
-                if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-                    st.warning("Add or correct this parent's number before contacting them.")
-                    continue
-                message = (f"Dear parent, {candidate['name']} has been absent for three "
-                           "recorded school days. Please contact Mahatma Gandhi English School.")
-                st.code(message, language=None)
-                whatsapp_url = f"https://wa.me/{phone[1:]}?text={quote(message)}"
-                st.link_button("💬 Open WhatsApp message", whatsapp_url)
+            st.success("✅ No pending 3-day absence alerts.")
+
+        else:
+            st.info(
+                f"🤖 Agent found {len(absence_candidates)} parent alert(s). "
+                "Review each message before opening WhatsApp."
+            )
+
+            for candidate in absence_candidates:
+
+                label = (
+                    f"🤖 {candidate['student_name']} · Class "
+                    f"{candidate['class']}"
+                    f"{candidate['division'] or ''}"
+                )
+
+                with st.expander(label):
+
+                    st.write(
+                        "📅 Absent dates: "
+                        + ", ".join(
+                            d.strftime("%d %b %Y")
+                            for d in candidate["dates"]
+                        )
+                    )
+
+                    phone = candidate["phone"]
+
+                    if not re.fullmatch(
+                        r"\+[1-9]\d{7,14}",
+                        phone
+                    ):
+                        st.warning(
+                            "⚠️ Parent mobile number missing or invalid."
+                        )
+                        continue
+
+                    st.caption(f"📱 Parent: {phone}")
+
+                    edited_message = st.text_area(
+                        "✏️ Review / edit message",
+                        value=candidate["message"],
+                        key=f"agent_message_{candidate['student_id']}"
+                    )
+
+                    st.warning(
+                        "🔐 Safe approval mode: "
+                        "The agent cannot send this automatically."
+                    )
+
+                    if edited_message.strip():
+
+                        whatsapp_url = (
+                            f"https://wa.me/{phone[1:]}"
+                            f"?text={quote(edited_message.strip())}"
+                        )
+
+                        st.link_button(
+                            "✅ Approve & Open WhatsApp",
+                            whatsapp_url,
+                            use_container_width=True
+                        )
+
     except Exception as exc:
-        st.error(f"Could not prepare parent contact list: {exc}")
+        st.error(
+            f"Could not prepare parent contact list: {exc}"
+        )
 
 
 if st.session_state.current_page == "Security" and str(st.session_state.role).strip().lower() == "principal":
