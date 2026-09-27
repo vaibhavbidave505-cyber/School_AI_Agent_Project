@@ -7,7 +7,7 @@ st.set_page_config(
     page_title="SchoolAI",
     page_icon="🏫",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="auto"
 )
 
 st.markdown("""
@@ -263,6 +263,177 @@ hr {
 
 }
 
+
+
+/* ================================
+   MOBILE-FIRST RESPONSIVE UPGRADE
+================================ */
+
+/* Comfortable touch targets */
+.stButton > button,
+.stDownloadButton > button,
+.stLinkButton > a {
+    min-height: 46px !important;
+}
+
+/* Prevent long labels / values from breaking the page */
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+.stCaption,
+p, label {
+    overflow-wrap: anywhere;
+}
+
+/* Tables stay usable on narrow screens */
+[data-testid="stDataFrame"],
+[data-testid="stTable"] {
+    max-width: 100% !important;
+    overflow-x: auto !important;
+}
+
+/* Inputs are touch friendly */
+.stTextInput input,
+.stTextArea textarea,
+.stNumberInput input,
+[data-baseweb="select"] > div {
+    min-height: 44px;
+    font-size: 16px !important;
+}
+
+@media (max-width: 900px) {
+    .block-container {
+        max-width: 100% !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-top: 1rem !important;
+        padding-bottom: 2rem !important;
+    }
+
+    h1 {
+        font-size: 1.85rem !important;
+        line-height: 1.2 !important;
+    }
+
+    h2 {
+        font-size: 1.45rem !important;
+    }
+
+    h3 {
+        font-size: 1.18rem !important;
+    }
+
+    [data-testid="stMetric"] {
+        padding: 14px 13px !important;
+        border-radius: 14px !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.55rem !important;
+    }
+
+    /* Keep sidebar compact and mobile-friendly */
+    [data-testid="stSidebar"] {
+        min-width: min(84vw, 330px) !important;
+        max-width: min(84vw, 330px) !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button {
+        min-height: 46px !important;
+    }
+
+    /* Login hero should not dominate small screens */
+    .school-hero {
+        min-height: 0 !important;
+        padding: 24px 20px !important;
+        border-radius: 20px !important;
+    }
+
+    .hero-icon {
+        margin: 18px 0 8px !important;
+        font-size: 44px !important;
+    }
+
+    .hero-title {
+        font-size: 29px !important;
+    }
+
+    .hero-copy {
+        font-size: 14px !important;
+        line-height: 1.55 !important;
+    }
+
+    .hero-tags {
+        margin-top: 18px !important;
+        gap: 7px !important;
+    }
+
+    .hero-tags span {
+        padding: 7px 10px !important;
+        font-size: 12px !important;
+    }
+
+    .login-heading {
+        font-size: 29px !important;
+    }
+
+    [data-testid="stTabs"] {
+        padding: 8px 8px 12px !important;
+        border-radius: 18px !important;
+    }
+
+    /* Make buttons easier to tap */
+    .stButton > button,
+    .stDownloadButton > button,
+    .stLinkButton > a {
+        width: 100% !important;
+        min-height: 48px !important;
+        font-size: 15px !important;
+    }
+}
+
+@media (max-width: 600px) {
+    .block-container {
+        padding-left: .75rem !important;
+        padding-right: .75rem !important;
+    }
+
+    h1 {
+        font-size: 1.65rem !important;
+    }
+
+    /* Dashboard cards / containers become tighter */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 14px !important;
+    }
+
+    /* Horizontal scrolling for wide report/admin tables */
+    [data-testid="stDataFrame"] > div {
+        max-width: 100% !important;
+        overflow-x: auto !important;
+    }
+
+    /* Avoid clipped select boxes and long filenames */
+    [data-baseweb="select"] {
+        max-width: 100% !important;
+    }
+
+    [data-testid="stFileUploader"] {
+        max-width: 100% !important;
+    }
+
+    .dash-hero {
+        padding: 20px 18px !important;
+        border-radius: 18px !important;
+    }
+
+    .dash-title {
+        font-size: 26px !important;
+    }
+
+    .dash-subtitle {
+        font-size: 14px !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 import time
@@ -302,6 +473,357 @@ from urllib.request import Request, urlopen
 load_dotenv()
 
 # =========================================================
+# PARENT ACCOUNTS
+# =========================================================
+# Parent logins are stored separately from staff accounts so a parent can
+# only be linked to one student record and never receives teacher/principal
+# permissions by mistake.
+parent_metadata = MetaData()
+parent_accounts = Table(
+    "parent_accounts", parent_metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", String(100), unique=True, nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("username", String(100), unique=True, nullable=False),
+    Column("password_hash", String(300), nullable=False),
+    Column("school_code", String(100), nullable=False),
+    Column("student_id", Integer, nullable=False),
+    Column("phone", String(30), nullable=True),
+    Column("created_at", DateTime, nullable=False),
+)
+
+def ensure_parent_accounts_table(db):
+    parent_metadata.create_all(db.get_bind(), tables=[parent_accounts], checkfirst=True)
+
+def find_parent_account(db, username):
+    ensure_parent_accounts_table(db)
+    return db.execute(
+        select(parent_accounts).where(
+            func.lower(parent_accounts.c.username) == str(username or "").strip().lower()
+        )
+    ).mappings().first()
+
+
+# =========================================================
+# SCHOOL CALENDAR / HOLIDAYS
+# =========================================================
+calendar_metadata = MetaData()
+school_calendar = Table(
+    "school_calendar", calendar_metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("school_code", String(100), nullable=False),
+    Column("event_date", Date, nullable=False),
+    Column("title", String(200), nullable=False),
+    Column("event_type", String(40), nullable=False),
+    Column("description", Text, nullable=True),
+    Column("created_at", DateTime, nullable=False),
+)
+
+
+def ensure_school_calendar_table(db):
+    calendar_metadata.create_all(db.get_bind(), tables=[school_calendar], checkfirst=True)
+
+
+def load_school_calendar(school_code, start_date=None, end_date=None):
+    db = SessionLocal()
+    try:
+        ensure_school_calendar_table(db)
+        query = select(school_calendar).where(
+            school_calendar.c.school_code == str(school_code)
+        )
+        if start_date is not None:
+            query = query.where(school_calendar.c.event_date >= start_date)
+        if end_date is not None:
+            query = query.where(school_calendar.c.event_date <= end_date)
+        return db.execute(
+            query.order_by(school_calendar.c.event_date, school_calendar.c.title)
+        ).mappings().all()
+    finally:
+        db.close()
+
+
+def get_holiday_for_date(school_code, target_date):
+    db = SessionLocal()
+    try:
+        ensure_school_calendar_table(db)
+        return db.execute(
+            select(school_calendar).where(
+                school_calendar.c.school_code == str(school_code),
+                school_calendar.c.event_date == target_date,
+                func.lower(school_calendar.c.event_type) == "holiday",
+            ).order_by(school_calendar.c.id).limit(1)
+        ).mappings().first()
+    finally:
+        db.close()
+
+
+# =========================================================
+# STUDENT MARKS / RESULT MODULE
+# =========================================================
+result_metadata = MetaData()
+student_results = Table(
+    "student_results", result_metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("school_code", String(100), nullable=False),
+    Column("student_id", Integer, nullable=False),
+    Column("academic_year", String(30), nullable=False),
+    Column("exam_name", String(120), nullable=False),
+    Column("subject_name", String(120), nullable=False),
+    Column("max_marks", Integer, nullable=False),
+    Column("marks_obtained", Integer, nullable=False),
+    Column("remarks", String(250), nullable=True),
+    Column("updated_by", String(120), nullable=True),
+    Column("updated_at", DateTime, nullable=False),
+)
+
+
+def ensure_student_results_table(db):
+    result_metadata.create_all(db.get_bind(), tables=[student_results], checkfirst=True)
+
+
+def load_student_results(school_code, student_id=None, academic_year=None, exam_name=None):
+    db = SessionLocal()
+    try:
+        ensure_student_results_table(db)
+        query = select(student_results).where(
+            student_results.c.school_code == str(school_code)
+        )
+        if student_id is not None:
+            query = query.where(student_results.c.student_id == int(student_id))
+        if academic_year:
+            query = query.where(student_results.c.academic_year == str(academic_year))
+        if exam_name:
+            query = query.where(student_results.c.exam_name == str(exam_name))
+        return db.execute(
+            query.order_by(
+                student_results.c.academic_year.desc(),
+                student_results.c.exam_name,
+                student_results.c.subject_name,
+            )
+        ).mappings().all()
+    finally:
+        db.close()
+
+
+def result_summary(rows):
+    total_max = sum(int(row["max_marks"] or 0) for row in rows)
+    total_obtained = sum(int(row["marks_obtained"] or 0) for row in rows)
+    percentage = (total_obtained / total_max * 100) if total_max else 0.0
+    return total_obtained, total_max, percentage
+
+
+def build_student_report_card_pdf(school_name, school_code, student, academic_year, exam_name, rows):
+    from io import BytesIO
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    except ImportError as exc:
+        raise RuntimeError("ReportLab is not installed. Run: python -m pip install reportlab") from exc
+
+    total_obtained, total_max, percentage = result_summary(rows)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4, rightMargin=15 * mm, leftMargin=15 * mm,
+        topMargin=14 * mm, bottomMargin=14 * mm,
+        title=f"Report Card - {student.name} - {exam_name}",
+        author=str(school_name or school_code),
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ResultTitle", parent=styles["Title"], alignment=TA_CENTER,
+        fontSize=18, leading=22, spaceAfter=4
+    )
+    sub_style = ParagraphStyle(
+        "ResultSub", parent=styles["Normal"], alignment=TA_CENTER,
+        fontSize=10, leading=13, textColor=colors.HexColor("#475569")
+    )
+    story = [
+        Paragraph(str(school_name or "School AI"), title_style),
+        Paragraph("Student Report Card", sub_style),
+        Paragraph(f"Academic Year: {academic_year} &nbsp;&nbsp; | &nbsp;&nbsp; Exam: {exam_name}", sub_style),
+        Spacer(1, 6 * mm),
+    ]
+
+    details = Table([
+        ["Student", str(student.name), "Class", f"{student.class_name}{student.division or ''}"],
+        ["School Code", str(school_code), "Generated", datetime.now().strftime("%d %b %Y")],
+    ], colWidths=[28 * mm, 62 * mm, 28 * mm, 62 * mm])
+    details.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EFF6FF")),
+        ("BACKGROUND", (2, 0), (2, -1), colors.HexColor("#EFF6FF")),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([details, Spacer(1, 7 * mm)])
+
+    table_data = [["Sr.", "Subject", "Marks", "Out of", "%", "Remarks"]]
+    for idx, row in enumerate(rows, 1):
+        max_marks = int(row["max_marks"] or 0)
+        obtained = int(row["marks_obtained"] or 0)
+        pct = (obtained / max_marks * 100) if max_marks else 0
+        table_data.append([
+            str(idx), str(row["subject_name"]), str(obtained), str(max_marks),
+            f"{pct:.1f}%", str(row.get("remarks") or ""),
+        ])
+    table_data.append(["", "TOTAL", str(total_obtained), str(total_max), f"{percentage:.1f}%", ""])
+
+    marks_table = Table(table_data, repeatRows=1, colWidths=[12 * mm, 55 * mm, 25 * mm, 25 * mm, 25 * mm, 48 * mm])
+    marks_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F1F5F9")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("ALIGN", (2, 1), (4, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([marks_table, Spacer(1, 7 * mm)])
+    story.append(Paragraph(
+        f"Overall: <b>{total_obtained} / {total_max}</b> &nbsp;&nbsp; | &nbsp;&nbsp; Percentage: <b>{percentage:.1f}%</b>",
+        styles["Heading3"],
+    ))
+    story.append(Spacer(1, 14 * mm))
+    signatures = Table([["Class Teacher Signature", "Principal Signature", "Parent Signature"]], colWidths=[60 * mm, 60 * mm, 60 * mm])
+    signatures.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 18),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.HexColor("#94A3B8")),
+    ]))
+    story.append(signatures)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# =========================================================
+# SUPER ADMIN + MULTI-SCHOOL MANAGEMENT
+# =========================================================
+admin_metadata = MetaData()
+schools = Table(
+    "schools", admin_metadata,
+    Column("school_code", String(100), primary_key=True),
+    Column("school_name", String(250), nullable=False),
+    Column("status", String(20), nullable=False, default="active"),
+    Column("created_at", DateTime, nullable=False),
+)
+
+
+def ensure_admin_tables(db):
+    admin_metadata.create_all(db.get_bind(), tables=[schools], checkfirst=True)
+
+
+def sync_existing_schools(db):
+    """Backfill the schools table from existing users/students/parents."""
+    ensure_admin_tables(db)
+    codes = set()
+    try:
+        codes.update(str(row[0]).strip() for row in db.query(User.school_code).distinct().all() if row[0])
+    except Exception:
+        pass
+    try:
+        codes.update(str(row[0]).strip() for row in db.query(Student.school_code).distinct().all() if row[0])
+    except Exception:
+        pass
+    try:
+        ensure_parent_accounts_table(db)
+        codes.update(
+            str(row[0]).strip()
+            for row in db.execute(select(parent_accounts.c.school_code).distinct()).all()
+            if row[0]
+        )
+    except Exception:
+        pass
+
+    for code in sorted(codes):
+        existing = db.execute(select(schools).where(schools.c.school_code == code)).mappings().first()
+        if not existing:
+            db.execute(schools.insert().values(
+                school_code=code,
+                school_name=code,
+                status="active",
+                created_at=datetime.utcnow(),
+            ))
+    db.commit()
+
+
+def get_school_name(school_code):
+    if not school_code:
+        return "School AI"
+    db = SessionLocal()
+    try:
+        ensure_admin_tables(db)
+        row = db.execute(select(schools).where(
+            schools.c.school_code == str(school_code)
+        )).mappings().first()
+        return row["school_name"] if row else str(school_code)
+    finally:
+        db.close()
+
+
+def school_is_active(db, school_code):
+    """Missing legacy school rows remain active for backwards compatibility."""
+    ensure_admin_tables(db)
+    row = db.execute(select(schools).where(
+        schools.c.school_code == str(school_code)
+    )).mappings().first()
+    if not row:
+        return True
+    return str(row["status"] or "active").strip().lower() == "active"
+
+
+def super_admin_credentials_valid(username, password):
+    expected_user = os.getenv("SUPER_ADMIN_USERNAME", "").strip()
+    expected_password = os.getenv("SUPER_ADMIN_PASSWORD", "")
+    if not expected_user or not expected_password:
+        return False
+    return (
+        hmac.compare_digest(str(username or "").strip().lower(), expected_user.lower())
+        and hmac.compare_digest(str(password or ""), expected_password)
+    )
+
+
+def create_super_admin_session(username):
+    st.session_state.just_logged_out = False
+    st.session_state.logged_in = True
+    st.session_state.school_code = ""
+    st.session_state.school_name = "School AI Platform"
+    st.session_state.username = str(username).strip()
+    st.session_state.user_id = "super-admin"
+    st.session_state.user_name = "Super Admin"
+    st.session_state.role = "super_admin"
+    st.session_state.parent_student_id = None
+    st.session_state.current_page = "Dashboard"
+    st.session_state.failed_attempts = 0
+    st.session_state.locked_until = 0.0
+
+    token = secrets.token_urlsafe(32)
+    store = session_store()
+    with store["lock"]:
+        store["sessions"][token] = {
+            "expires_at": time.time() + SESSION_SECONDS,
+            "school_code": "",
+            "school_name": "School AI Platform",
+            "username": str(username).strip(),
+            "user_id": "super-admin",
+            "user_name": "Super Admin",
+            "role": "super_admin",
+            "parent_student_id": None,
+        }
+    st.query_params[SESSION_PARAM] = token
+
+# =========================================================
 # LOGIN COOKIE
 # =========================================================
 
@@ -329,6 +851,18 @@ defaults = {
     "username": "",
     "role": "",
     "user_id": None,
+    "parent_student_id": None,
+    "reset_stage": "",
+    "reset_account_type": "",
+    "reset_user_id": "",
+    "reset_username": "",
+    "reset_phone": "",
+    "reset_otp_hash": "",
+    "reset_otp_expires_at": 0.0,
+    "reset_otp_attempts": 0,
+    "reset_otp_last_sent_at": 0.0,
+    "reset_otp_test_value": "",
+    "password_reset_success": "",
     "otp_pending": False,
     "otp_user_id": None,
     "otp_hash": "",
@@ -370,9 +904,9 @@ def clear_login():
     if SESSION_PARAM in st.query_params:
         del st.query_params[SESSION_PARAM]
     for field in ("logged_in", "school_code", "school_name", "username",
-                  "user_id", "user_name", "role", "messages"):
+                  "user_id", "user_name", "role", "messages", "parent_student_id"):
         st.session_state[field] = [] if field == "messages" else (
-            False if field == "logged_in" else None if field == "user_id" else ""
+            False if field == "logged_in" else None if field in ("user_id", "parent_student_id") else ""
         )
     st.session_state.current_page = "Dashboard"
     for key, value in {
@@ -453,7 +987,7 @@ def send_otp_sms(number: str, otp: str):
     token = os.environ["TWILIO_AUTH_TOKEN"]
     sender = os.environ["TWILIO_FROM_NUMBER"]
     auth = base64.b64encode(f"{sid}:{token}".encode()).decode()
-    body = f"Your School AI login OTP is {otp}. It expires in 5 minutes. Do not share it."
+    body = f"Your School AI verification OTP is {otp}. It expires in 5 minutes. Do not share it."
     request = Request(
         f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
         data=urlencode({"To": number, "From": sender, "Body": body}).encode(),
@@ -470,12 +1004,131 @@ def hash_otp(otp: str) -> str:
     return hmac.new(secret.encode("utf-8"), otp.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def clear_password_reset_state():
+    """Clear temporary password-reset data from the Streamlit session."""
+    for key, value in {
+        "reset_stage": "",
+        "reset_account_type": "",
+        "reset_user_id": "",
+        "reset_username": "",
+        "reset_phone": "",
+        "reset_otp_hash": "",
+        "reset_otp_expires_at": 0.0,
+        "reset_otp_attempts": 0,
+        "reset_otp_last_sent_at": 0.0,
+        "reset_otp_test_value": "",
+    }.items():
+        st.session_state[key] = value
+
+
+def start_password_reset(username: str):
+    """Find a staff/parent account, send an OTP, and begin password reset."""
+    clean_username = str(username or "").strip()
+    if not clean_username:
+        raise RuntimeError("Enter your username.")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(
+            func.lower(User.username) == clean_username.lower()
+        ).first()
+
+        account_type = "staff"
+        account_user_id = ""
+        account_username = ""
+        phone = ""
+
+        if user:
+            account_user_id = str(user.user_id)
+            account_username = str(user.username)
+            phone = (getattr(user, "phone", "") or "").strip()
+        else:
+            parent = find_parent_account(db, clean_username)
+            if not parent:
+                raise RuntimeError("No account was found with this username.")
+            account_type = "parent"
+            account_user_id = str(parent["user_id"])
+            account_username = str(parent["username"])
+            phone = (parent.get("phone") or "").strip()
+
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+            raise RuntimeError(
+                "This account does not have a valid registered mobile number. "
+                "Please contact the principal to update the mobile number."
+            )
+
+        otp = f"{secrets.randbelow(1_000_000):06d}"
+        send_otp_sms(phone, otp)
+
+        st.session_state.reset_stage = "verify"
+        st.session_state.reset_account_type = account_type
+        st.session_state.reset_user_id = account_user_id
+        st.session_state.reset_username = account_username
+        st.session_state.reset_phone = phone
+        st.session_state.reset_otp_hash = hash_otp(otp)
+        st.session_state.reset_otp_expires_at = time.time() + OTP_EXPIRY_SECONDS
+        st.session_state.reset_otp_attempts = 0
+        st.session_state.reset_otp_last_sent_at = time.time()
+        st.session_state.reset_otp_test_value = otp if otp_test_mode() else ""
+    finally:
+        db.close()
+
+
+def resend_password_reset_otp():
+    """Send a fresh reset OTP to the already-verified account phone."""
+    phone = str(st.session_state.get("reset_phone") or "").strip()
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+        raise RuntimeError("Registered mobile number is unavailable.")
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    send_otp_sms(phone, otp)
+    st.session_state.reset_otp_hash = hash_otp(otp)
+    st.session_state.reset_otp_expires_at = time.time() + OTP_EXPIRY_SECONDS
+    st.session_state.reset_otp_attempts = 0
+    st.session_state.reset_otp_last_sent_at = time.time()
+    st.session_state.reset_otp_test_value = otp if otp_test_mode() else ""
+
+
+def update_reset_password(new_password: str):
+    """Update the password only after reset OTP verification."""
+    password_hash = bcrypt.hashpw(
+        new_password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+
+    account_type = st.session_state.get("reset_account_type")
+    reset_user_id = str(st.session_state.get("reset_user_id") or "")
+
+    db = SessionLocal()
+    try:
+        if account_type == "parent":
+            ensure_parent_accounts_table(db)
+            result = db.execute(
+                parent_accounts.update().where(
+                    parent_accounts.c.user_id == reset_user_id
+                ).values(password_hash=password_hash)
+            )
+            if not result.rowcount:
+                raise RuntimeError("Parent account could not be found.")
+        else:
+            user = db.query(User).filter(User.user_id == reset_user_id).first()
+            if not user:
+                raise RuntimeError("User account could not be found.")
+            user.password_hash = password_hash
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def create_authenticated_session(user):
     """Create the 15-minute application session after authentication is complete."""
+    display_school_name = get_school_name(user.school_code)
     st.session_state.just_logged_out = False
     st.session_state.logged_in = True
     st.session_state.school_code = user.school_code
-    st.session_state.school_name = user.school_code
+    st.session_state.school_name = display_school_name
     st.session_state.username = user.username
     st.session_state.user_id = user.user_id
     st.session_state.user_name = user.name
@@ -490,11 +1143,43 @@ def create_authenticated_session(user):
         store["sessions"][token] = {
             "expires_at": time.time() + SESSION_SECONDS,
             "school_code": user.school_code,
-            "school_name": user.school_code,
+            "school_name": display_school_name,
             "username": user.username,
             "user_id": user.user_id,
             "user_name": user.name,
             "role": user.role,
+        }
+    st.query_params[SESSION_PARAM] = token
+
+
+def create_parent_authenticated_session(parent):
+    """Create a restricted session for one linked student."""
+    display_school_name = get_school_name(parent["school_code"])
+    st.session_state.just_logged_out = False
+    st.session_state.logged_in = True
+    st.session_state.school_code = parent["school_code"]
+    st.session_state.school_name = display_school_name
+    st.session_state.username = parent["username"]
+    st.session_state.user_id = parent["user_id"]
+    st.session_state.user_name = parent["name"]
+    st.session_state.role = "parent"
+    st.session_state.parent_student_id = int(parent["student_id"])
+    st.session_state.current_page = "Dashboard"
+    st.session_state.failed_attempts = 0
+    st.session_state.locked_until = 0.0
+
+    token = secrets.token_urlsafe(32)
+    store = session_store()
+    with store["lock"]:
+        store["sessions"][token] = {
+            "expires_at": time.time() + SESSION_SECONDS,
+            "school_code": parent["school_code"],
+            "school_name": display_school_name,
+            "username": parent["username"],
+            "user_id": parent["user_id"],
+            "user_name": parent["name"],
+            "role": "parent",
+            "parent_student_id": int(parent["student_id"]),
         }
     st.query_params[SESSION_PARAM] = token
 
@@ -862,14 +1547,17 @@ def login_page():
         <div class="login-intro">
             <div class="login-eyebrow">SECURE SCHOOL ACCESS</div>
             <div class="login-heading">Welcome to School AI</div>
-            <div class="login-detail">Choose Sign in for existing accounts or Principal Registration to create a secured principal account.</div>
+            <div class="login-detail">Staff, parents and the platform Super Admin use Sign in. Principal Registration is only for an authorized school principal.</div>
         </div>
         """, unsafe_allow_html=True)
 
-        signin_tab, register_tab = st.tabs(["🔐 Sign in", "📝 Principal Registration"])
+        signin_tab, forgot_tab, register_tab = st.tabs(["🔐 Sign in", "🔑 Forgot Password", "📝 Principal Registration"])
 
         with signin_tab:
             with st.container(border=True):
+                reset_success = st.session_state.pop("password_reset_success", "")
+                if reset_success:
+                    st.success(reset_success)
                 username = st.text_input("Username", placeholder="Your username", key="login_username")
                 password = st.text_input("Password", type="password", placeholder="Your password", key="login_password")
                 login_clicked = st.button("Sign in →", type="primary", use_container_width=True, key="login_submit")
@@ -884,23 +1572,49 @@ def login_page():
                         st.error(f"🔒 Too many failed attempts. Try again in {minutes}m {seconds}s.")
                         return
 
+                    is_super_admin = super_admin_credentials_valid(username, password)
+                    user = None
+                    parent = None
+                    account_active = True
+
                     db = SessionLocal()
                     try:
-                        user = db.query(User).filter(User.username == username.strip()).first()
-                        valid_login = bool(user) and verify_password(password, user.password_hash)
+                        if not is_super_admin:
+                            user = db.query(User).filter(
+                                func.lower(User.username) == username.strip().lower()
+                            ).first()
+                            valid_login = bool(user) and verify_password(password, user.password_hash)
+                            if not valid_login:
+                                parent = find_parent_account(db, username)
+                                valid_login = bool(parent) and verify_password(password, parent["password_hash"])
+                            if valid_login:
+                                account_school_code = user.school_code if user else parent["school_code"]
+                                account_active = school_is_active(db, account_school_code)
+                        else:
+                            valid_login = True
                     finally:
                         db.close()
 
-                    if valid_login:
-                        if str(user.role).strip().lower() == "principal":
+                    if valid_login and not account_active:
+                        st.error("🏫 This school is currently inactive. Please contact the School AI administrator.")
+                    elif valid_login:
+                        if is_super_admin:
+                            create_super_admin_session(username)
+                            st.success("✅ Super Admin login successful!")
+                            st.rerun()
+                        elif user and str(user.role).strip().lower() == "principal":
                             try:
                                 start_principal_otp(user)
                                 st.rerun()
                             except Exception as exc:
                                 st.error(f"Could not send OTP: {exc}")
-                        else:
+                        elif user:
                             create_authenticated_session(user)
                             st.success("✅ Login successful!")
+                            st.rerun()
+                        else:
+                            create_parent_authenticated_session(parent)
+                            st.success("✅ Parent login successful!")
                             st.rerun()
                     else:
                         st.session_state.failed_attempts += 1
@@ -910,6 +1624,127 @@ def login_page():
                             st.error("🔒 Too many failed password attempts. Login is locked for 5 minutes.")
                         else:
                             st.error(f"❌ Invalid username or password. {attempts_left} attempt(s) remaining.")
+
+        with forgot_tab:
+            with st.container(border=True):
+                st.markdown("#### 🔑 Reset your password")
+                st.caption("Use your username. We will send an OTP to the registered mobile number.")
+
+                reset_stage = st.session_state.get("reset_stage", "")
+
+                if not reset_stage:
+                    reset_username_input = st.text_input(
+                        "Username",
+                        placeholder="Enter your login username",
+                        key="reset_username_input",
+                    )
+                    if st.button(
+                        "Send Reset OTP →",
+                        type="primary",
+                        use_container_width=True,
+                        key="send_reset_otp",
+                    ):
+                        try:
+                            start_password_reset(reset_username_input)
+                            st.success("OTP sent to your registered mobile number.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(str(exc))
+
+                elif reset_stage == "verify":
+                    st.info(
+                        f"OTP sent to {masked_phone(st.session_state.reset_phone)} "
+                        f"for @{st.session_state.reset_username}."
+                    )
+                    if otp_test_mode() and st.session_state.get("reset_otp_test_value"):
+                        st.info(f"Testing OTP: {st.session_state.reset_otp_test_value}")
+
+                    reset_otp_input = st.text_input(
+                        "Enter 6-digit OTP",
+                        max_chars=6,
+                        key="reset_otp_input",
+                    )
+                    verify_col, resend_col = st.columns(2)
+
+                    if verify_col.button(
+                        "Verify OTP",
+                        type="primary",
+                        use_container_width=True,
+                        key="verify_reset_otp",
+                    ):
+                        if time.time() > st.session_state.reset_otp_expires_at:
+                            st.error("OTP expired. Please resend a new OTP.")
+                        elif st.session_state.reset_otp_attempts >= OTP_MAX_ATTEMPTS:
+                            st.error("Too many wrong OTP attempts. Please resend a new OTP.")
+                        elif not re.fullmatch(r"\d{6}", reset_otp_input.strip()):
+                            st.error("Enter the 6-digit OTP.")
+                        elif not hmac.compare_digest(
+                            hash_otp(reset_otp_input.strip()),
+                            st.session_state.reset_otp_hash,
+                        ):
+                            st.session_state.reset_otp_attempts += 1
+                            remaining = OTP_MAX_ATTEMPTS - st.session_state.reset_otp_attempts
+                            st.error(f"Incorrect OTP. {remaining} attempt(s) remaining.")
+                        else:
+                            st.session_state.reset_stage = "new_password"
+                            st.rerun()
+
+                    if resend_col.button(
+                        "Resend OTP",
+                        use_container_width=True,
+                        key="resend_reset_otp",
+                    ):
+                        wait = OTP_RESEND_SECONDS - int(
+                            time.time() - st.session_state.reset_otp_last_sent_at
+                        )
+                        if wait > 0:
+                            st.warning(f"Please wait {wait} seconds before resending.")
+                        else:
+                            try:
+                                resend_password_reset_otp()
+                                st.success("New OTP sent.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
+
+                    if st.button("Cancel password reset", key="cancel_password_reset"):
+                        clear_password_reset_state()
+                        st.rerun()
+
+                elif reset_stage == "new_password":
+                    st.success("✅ OTP verified. Create your new password.")
+                    st.caption(f"Account: @{st.session_state.reset_username}")
+                    reset_new_password = st.text_input(
+                        "New password",
+                        type="password",
+                        key="reset_new_password",
+                    )
+                    reset_confirm_password = st.text_input(
+                        "Confirm new password",
+                        type="password",
+                        key="reset_confirm_password",
+                    )
+                    if st.button(
+                        "Update Password",
+                        type="primary",
+                        use_container_width=True,
+                        key="update_reset_password",
+                    ):
+                        if len(reset_new_password) < 8:
+                            st.error("Password must be at least 8 characters.")
+                        elif reset_new_password != reset_confirm_password:
+                            st.error("Passwords do not match.")
+                        else:
+                            try:
+                                update_reset_password(reset_new_password)
+                                username_done = st.session_state.reset_username
+                                clear_password_reset_state()
+                                st.session_state.password_reset_success = (
+                                    f"✅ Password updated for @{username_done}. You can sign in now."
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not update password: {exc}")
 
         with register_tab:
             with st.container(border=True):
@@ -1018,6 +1853,7 @@ if not active_session:
 st.session_state.logged_in = True
 for field in ("school_code", "school_name", "username", "user_id", "user_name", "role"):
     st.session_state[field] = active_session[field]
+st.session_state.parent_student_id = active_session.get("parent_student_id")
 
 
 @st.fragment(run_every="10s")
@@ -1030,7 +1866,378 @@ def session_countdown():
     st.caption(f"⏱️ Session ends in {remaining // 60:02d}:{remaining % 60:02d}")
 
 
+# =========================================================
+# SUPER ADMIN PORTAL - MULTI-SCHOOL MANAGEMENT
+# =========================================================
+def render_super_admin_portal():
+    with st.sidebar:
+        st.markdown("### 🛡️ Super Admin")
+        st.success("🌐 School AI Platform")
+        st.caption(f"👤 {st.session_state.username}")
+        session_countdown()
+        if st.button("🚪 Logout", key="super_admin_logout", use_container_width=True):
+            clear_login()
+            st.rerun()
 
+    st.title("🛡️ Super Admin Dashboard")
+    st.caption("Create and manage schools, principals, and school activation status from one place.")
+
+    db = SessionLocal()
+    try:
+        sync_existing_schools(db)
+        ensure_parent_accounts_table(db)
+        school_rows = db.execute(select(schools).order_by(schools.c.school_name)).mappings().all()
+
+        all_students = db.query(Student).all()
+        all_users = db.query(User).all()
+        parent_rows = db.execute(select(parent_accounts)).mappings().all()
+    finally:
+        db.close()
+
+    active_count = sum(str(row["status"]).lower() == "active" for row in school_rows)
+    teacher_count = sum(str(user.role or "").lower() == "teacher" for user in all_users)
+    principal_count = sum(str(user.role or "").lower() == "principal" for user in all_users)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("🏫 Schools", len(school_rows))
+    c2.metric("✅ Active", active_count)
+    c3.metric("👨‍🎓 Students", len(all_students))
+    c4.metric("👩‍🏫 Teachers", teacher_count)
+    c5.metric("👨‍👩‍👧 Parents", len(parent_rows))
+
+    st.divider()
+    st.subheader("➕ Create New School + Principal")
+    st.caption("The Super Admin creates the school first, then its first principal login.")
+
+    with st.form("super_admin_create_school"):
+        left, right = st.columns(2)
+        with left:
+            new_school_name = st.text_input("School name", placeholder="ABC English School")
+            new_school_code = st.text_input("School code", placeholder="SCHOOL002")
+            principal_name = st.text_input("Principal full name", placeholder="Rahul Patil")
+        with right:
+            principal_username = st.text_input("Principal username", placeholder="abc_principal")
+            principal_phone = st.text_input("Principal mobile", placeholder="+919876543210")
+            principal_password = st.text_input("Temporary password", type="password")
+        create_school = st.form_submit_button("Create School & Principal", type="primary", use_container_width=True)
+
+    if create_school:
+        school_name = new_school_name.strip()
+        school_code = new_school_code.strip().upper()
+        p_name = principal_name.strip()
+        p_username = principal_username.strip()
+        p_phone = principal_phone.strip()
+
+        if not school_name or not school_code or not p_name or not p_username:
+            st.error("School name, school code, principal name and username are required.")
+        elif not re.fullmatch(r"[A-Z0-9_-]{3,30}", school_code):
+            st.error("School code must be 3–30 characters using A-Z, 0-9, underscore or hyphen.")
+        elif not re.fullmatch(r"[A-Za-z0-9_.-]{4,50}", p_username):
+            st.error("Principal username must be 4–50 characters.")
+        elif not re.fullmatch(r"\+[1-9]\d{7,14}", p_phone):
+            st.error("Use principal mobile format like +919876543210.")
+        elif len(principal_password) < 8:
+            st.error("Temporary password must be at least 8 characters.")
+        else:
+            db = SessionLocal()
+            try:
+                ensure_admin_tables(db)
+                school_exists = db.execute(select(schools).where(
+                    schools.c.school_code == school_code
+                )).first()
+                username_exists = db.query(User).filter(
+                    func.lower(User.username) == p_username.lower()
+                ).first()
+                parent_username_exists = find_parent_account(db, p_username)
+
+                if school_exists:
+                    st.error("This school code already exists.")
+                elif username_exists or parent_username_exists:
+                    st.error("This username already exists. Choose another username.")
+                else:
+                    db.execute(schools.insert().values(
+                        school_code=school_code,
+                        school_name=school_name,
+                        status="active",
+                        created_at=datetime.utcnow(),
+                    ))
+                    password_hash = bcrypt.hashpw(
+                        principal_password.encode("utf-8"), bcrypt.gensalt()
+                    ).decode("utf-8")
+                    values = dict(
+                        user_id=f"principal-{secrets.token_hex(6)}",
+                        name=p_name,
+                        username=p_username,
+                        password_hash=password_hash,
+                        role="principal",
+                        school_code=school_code,
+                    )
+                    if hasattr(User, "phone"):
+                        values["phone"] = p_phone
+                    if hasattr(User, "phone_verified"):
+                        values["phone_verified"] = 0
+                    db.add(User(**values))
+                    db.commit()
+                    st.success(f"✅ {school_name} created with principal login @{p_username}.")
+                    st.info("Share the temporary password securely. The principal can use Forgot Password later if needed.")
+                    st.rerun()
+            except Exception as exc:
+                db.rollback()
+                st.error(f"Could not create school: {exc}")
+            finally:
+                db.close()
+
+    st.divider()
+    st.subheader("🏫 Manage Schools")
+
+    if not school_rows:
+        st.info("No schools have been created yet.")
+        return
+
+    students_by_school = {}
+    for student in all_students:
+        students_by_school[str(student.school_code)] = students_by_school.get(str(student.school_code), 0) + 1
+    teachers_by_school = {}
+    principals_by_school = {}
+    for user in all_users:
+        code = str(user.school_code)
+        role = str(user.role or "").lower()
+        if role == "teacher":
+            teachers_by_school[code] = teachers_by_school.get(code, 0) + 1
+        elif role == "principal":
+            principals_by_school[code] = principals_by_school.get(code, 0) + 1
+    parents_by_school = {}
+    for parent in parent_rows:
+        code = str(parent["school_code"])
+        parents_by_school[code] = parents_by_school.get(code, 0) + 1
+
+    summary_rows = []
+    for school in school_rows:
+        code = school["school_code"]
+        summary_rows.append({
+            "School": school["school_name"],
+            "Code": code,
+            "Status": str(school["status"]).title(),
+            "Principals": principals_by_school.get(code, 0),
+            "Teachers": teachers_by_school.get(code, 0),
+            "Students": students_by_school.get(code, 0),
+            "Parents": parents_by_school.get(code, 0),
+        })
+    st.dataframe(summary_rows, hide_index=True, use_container_width=True)
+
+    school_map = {row["school_code"]: row for row in school_rows}
+    selected_code = st.selectbox(
+        "Select school to manage",
+        list(school_map.keys()),
+        format_func=lambda code: f"{school_map[code]['school_name']} ({code})",
+    )
+    selected = school_map[selected_code]
+    current_status = str(selected["status"] or "active").lower()
+
+    st.write(f"**School:** {selected['school_name']}")
+    st.write(f"**Code:** {selected_code}")
+    st.write(f"**Status:** {'✅ Active' if current_status == 'active' else '⛔ Inactive'}")
+
+    db = SessionLocal()
+    try:
+        principals = db.query(User).filter(
+            User.school_code == selected_code,
+            func.lower(User.role) == "principal",
+        ).all()
+    finally:
+        db.close()
+    if principals:
+        st.caption("Principal(s): " + ", ".join(f"{p.name} (@{p.username})" for p in principals))
+    else:
+        st.warning("No principal account is linked to this school.")
+
+    if current_status == "active":
+        if st.button("⛔ Deactivate School", key="deactivate_school", use_container_width=True):
+            db = SessionLocal()
+            try:
+                ensure_admin_tables(db)
+                db.execute(schools.update().where(
+                    schools.c.school_code == selected_code
+                ).values(status="inactive"))
+                db.commit()
+                st.success("School deactivated. Its users cannot sign in until reactivated.")
+                st.rerun()
+            finally:
+                db.close()
+    else:
+        if st.button("✅ Activate School", key="activate_school", type="primary", use_container_width=True):
+            db = SessionLocal()
+            try:
+                ensure_admin_tables(db)
+                db.execute(schools.update().where(
+                    schools.c.school_code == selected_code
+                ).values(status="active"))
+                db.commit()
+                st.success("School activated.")
+                st.rerun()
+            finally:
+                db.close()
+
+
+if str(st.session_state.role).strip().lower() == "super_admin":
+    render_super_admin_portal()
+    st.stop()
+
+
+# =========================================================
+# PARENT PORTAL - RESTRICTED TO ONE CHILD
+# =========================================================
+def render_parent_portal():
+    student_id = st.session_state.get("parent_student_id")
+    db = SessionLocal()
+    try:
+        student = db.query(Student).filter(
+            Student.id == student_id,
+            Student.school_code == st.session_state.school_code,
+        ).first()
+        if not student:
+            st.error("The student linked to this parent account could not be found. Please contact the school.")
+            return
+        records = db.query(Attendance).filter(
+            Attendance.student_id == student.id
+        ).order_by(Attendance.date.desc()).all()
+    finally:
+        db.close()
+
+    with st.sidebar:
+        st.markdown("### 👨‍👩‍👧 Parent Portal")
+        st.success(f"🏫 {st.session_state.school_name}")
+        st.caption(f"👤 {st.session_state.user_name}")
+        st.caption(f"🎓 {student.name} · Class {student.class_name}{student.division or ''}")
+        session_countdown()
+        if st.button("🚪 Logout", key="parent_logout", use_container_width=True):
+            clear_login()
+            st.rerun()
+
+    st.title("👨‍👩‍👧 Parent Dashboard")
+    st.caption("This account can view only the linked child's attendance information.")
+
+    total_days = int(student.total_days or 0)
+    present_days = int(student.present_days or 0)
+    absent_days = max(0, total_days - present_days)
+    attendance_pct = (present_days / total_days * 100) if total_days else 0.0
+
+    st.subheader(f"🎓 {student.name}")
+    st.write(f"**Class:** {student.class_name}{student.division or ''}")
+    cols = st.columns(4)
+    cols[0].metric("📅 Total Days", total_days)
+    cols[1].metric("✅ Present", present_days)
+    cols[2].metric("❌ Absent", absent_days)
+    cols[3].metric("📊 Attendance", f"{attendance_pct:.1f}%")
+
+    if attendance_pct < 80 and total_days:
+        st.warning("⚠️ Attendance is below 80%. Please contact the school if you need clarification.")
+    elif total_days:
+        st.success("✅ Attendance is 80% or above.")
+
+    st.divider()
+    st.subheader("🗓️ Recent Attendance")
+    if records:
+        recent = [
+            {"Date": r.date.strftime("%d %b %Y"), "Status": str(r.status).title()}
+            for r in records[:31]
+        ]
+        st.dataframe(recent, hide_index=True, use_container_width=True)
+    else:
+        st.info("No daily attendance records are available yet.")
+
+    today = date.today()
+    st.divider()
+    st.subheader("📅 School Calendar")
+    upcoming = load_school_calendar(
+        st.session_state.school_code,
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=60),
+    )
+    if upcoming:
+        st.dataframe([
+            {
+                "Date": row["event_date"].strftime("%d %b %Y"),
+                "Type": row["event_type"],
+                "Title": row["title"],
+            }
+            for row in upcoming[:10]
+        ], hide_index=True, use_container_width=True)
+    else:
+        st.info("No upcoming school calendar entries in the next 60 days.")
+
+    st.divider()
+    st.subheader("📆 Monthly Summary")
+    month_records = [r for r in records if r.date.year == today.year and r.date.month == today.month]
+    month_present = sum(str(r.status).lower() == "present" for r in month_records)
+    month_absent = sum(str(r.status).lower() == "absent" for r in month_records)
+    month_total = len(month_records)
+    month_pct = (month_present / month_total * 100) if month_total else 0.0
+    mc = st.columns(3)
+    mc[0].metric(today.strftime("%B %Y") + " Marked Days", month_total)
+    mc[1].metric("Present", month_present)
+    mc[2].metric("Attendance", f"{month_pct:.1f}%")
+    if month_total:
+        st.caption(f"Absent this month: {month_absent}")
+    else:
+        st.info("No attendance has been marked for this student this month.")
+
+    st.divider()
+    st.subheader("📝 Marks & Report Card")
+    result_rows = load_student_results(st.session_state.school_code, student_id=student.id)
+    if result_rows:
+        exam_keys = []
+        for row in result_rows:
+            key = (row["academic_year"], row["exam_name"])
+            if key not in exam_keys:
+                exam_keys.append(key)
+        selected_result_exam = st.selectbox(
+            "Select report", exam_keys,
+            format_func=lambda item: f"{item[0]} · {item[1]}",
+            key="parent_result_exam_select",
+        )
+        selected_rows = [
+            row for row in result_rows
+            if (row["academic_year"], row["exam_name"]) == selected_result_exam
+        ]
+        total_obtained, total_max, result_pct = result_summary(selected_rows)
+        st.dataframe([
+            {
+                "Subject": row["subject_name"],
+                "Marks": int(row["marks_obtained"]),
+                "Out of": int(row["max_marks"]),
+                "%": round((int(row["marks_obtained"]) / int(row["max_marks"]) * 100), 1) if int(row["max_marks"]) else 0,
+                "Remarks": row.get("remarks") or "",
+            }
+            for row in selected_rows
+        ], hide_index=True, use_container_width=True)
+        rc_cols = st.columns(3)
+        rc_cols[0].metric("Total", total_obtained)
+        rc_cols[1].metric("Out of", total_max)
+        rc_cols[2].metric("Percentage", f"{result_pct:.1f}%")
+        try:
+            report_bytes = build_student_report_card_pdf(
+                st.session_state.school_name, st.session_state.school_code, student,
+                selected_result_exam[0], selected_result_exam[1], selected_rows,
+            )
+            safe_exam = re.sub(r"[^A-Za-z0-9_-]+", "_", selected_result_exam[1]).strip("_") or "exam"
+            st.download_button(
+                "📥 Download Report Card PDF",
+                data=report_bytes,
+                file_name=f"{student.name.replace(' ', '_')}_{safe_exam}_report_card.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="parent_report_card_download",
+            )
+        except Exception as exc:
+            st.warning(f"Report card PDF is unavailable: {exc}")
+    else:
+        st.info("No marks/results have been published for this student yet.")
+
+
+if str(st.session_state.role).strip().lower() == "parent":
+    render_parent_portal()
+    st.stop()
 
 
 # =========================================================
@@ -1148,6 +2355,54 @@ def load_teacher_assignments():
         db.close()
 
 
+def load_teacher_accounts():
+    """Return teacher accounts for the current school, keyed by username."""
+    db = SessionLocal()
+    try:
+        teachers = db.query(User).filter(
+            User.school_code == st.session_state.school_code,
+            func.lower(User.role) == "teacher",
+        ).order_by(User.name, User.username).all()
+        return {
+            teacher.username: {
+                "user_id": teacher.user_id,
+                "name": teacher.name,
+                "username": teacher.username,
+            }
+            for teacher in teachers
+        }
+    finally:
+        db.close()
+
+
+def get_allowed_teacher_groups():
+    """Return class/division groups the logged-in teacher may access."""
+    if str(st.session_state.role).strip().lower() != "teacher":
+        return None
+    username = str(st.session_state.username or "").strip().lower()
+    full_name = str(st.session_state.user_name or "").strip().lower()
+    assignments = load_teacher_assignments()
+    allowed = set()
+    for group, assigned_value in assignments.items():
+        assigned = str(assigned_value or "").strip().lower()
+        # New assignments store username. Full-name matching keeps old assignments working.
+        if assigned and assigned in {username, full_name}:
+            allowed.add((str(group[0]), str(group[1] or "")))
+    return allowed
+
+
+def teacher_display_name(assignment_value):
+    """Convert a stored teacher username to a friendly display name."""
+    value = str(assignment_value or "").strip()
+    if not value:
+        return "Not assigned"
+    accounts = load_teacher_accounts()
+    account = accounts.get(value)
+    if account:
+        return f"{account['name']} (@{account['username']})"
+    return value
+
+
 def load_today_class_status(school_code, groups):
     """Return attendance progress for today's roster, scoped to this school."""
     db = SessionLocal()
@@ -1231,6 +2486,13 @@ def safe_parent_alert_agent(school_code):
 
     candidates = get_three_day_absences(school_code)
 
+    if str(st.session_state.role).strip().lower() == "teacher":
+        allowed_groups = get_allowed_teacher_groups() or set()
+        candidates = [
+            student for student in candidates
+            if (str(student["class"]), str(student["division"] or "")) in allowed_groups
+        ]
+
     alerts = []
 
     for student in candidates:
@@ -1255,6 +2517,202 @@ def safe_parent_alert_agent(school_code):
         })
 
     return alerts
+
+
+# =========================================================
+# MONTHLY PDF ATTENDANCE REPORT
+# =========================================================
+
+def build_monthly_attendance_pdf(school_code, school_name, year, month, groups):
+    """Build a monthly attendance PDF for the requested class/division groups."""
+    from io import BytesIO
+    import calendar
+
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "ReportLab is not installed. Run: python -m pip install reportlab"
+        ) from exc
+
+    month_start = date(int(year), int(month), 1)
+    month_end = date(int(year), int(month), calendar.monthrange(int(year), int(month))[1])
+    month_label = month_start.strftime("%B %Y")
+
+    normalized_groups = {(str(c), str(d or "")) for c, d in groups}
+    if not normalized_groups:
+        raise RuntimeError("No class/division selected for the report.")
+
+    db = SessionLocal()
+    try:
+        students = db.query(Student).filter(
+            Student.school_code == school_code
+        ).order_by(Student.class_name, Student.division, Student.name).all()
+        students = [
+            student for student in students
+            if (str(student.class_name), str(student.division or "")) in normalized_groups
+        ]
+
+        student_ids = [student.id for student in students]
+        records = []
+        if student_ids:
+            records = db.query(Attendance).filter(
+                Attendance.student_id.in_(student_ids),
+                Attendance.date >= month_start,
+                Attendance.date <= month_end,
+            ).all()
+    finally:
+        db.close()
+
+    by_student = {}
+    for record in records:
+        status = str(record.status or "").strip().lower()
+        bucket = by_student.setdefault(record.student_id, {"present": 0, "absent": 0, "marked": 0})
+        if status in ("present", "absent"):
+            bucket[status] += 1
+            bucket["marked"] += 1
+
+    students_by_group = {}
+    for student in students:
+        group = (str(student.class_name), str(student.division or ""))
+        students_by_group.setdefault(group, []).append(student)
+
+    teacher_map = load_teacher_assignments()
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=12 * mm, leftMargin=12 * mm,
+        topMargin=12 * mm, bottomMargin=12 * mm,
+        title=f"Monthly Attendance Report - {month_label}",
+        author=str(school_name or school_code),
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle", parent=styles["Title"], alignment=TA_CENTER,
+        fontSize=18, leading=22, spaceAfter=5
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubTitle", parent=styles["Normal"], alignment=TA_CENTER,
+        fontSize=10, leading=13, textColor=colors.HexColor("#475569")
+    )
+    section_style = ParagraphStyle(
+        "SectionTitle", parent=styles["Heading2"], fontSize=13,
+        leading=16, spaceBefore=8, spaceAfter=6
+    )
+
+    story = [
+        Paragraph(str(school_name or "School AI"), title_style),
+        Paragraph(f"Monthly Attendance Report - {month_label}", subtitle_style),
+        Paragraph(
+            f"School Code: {school_code} &nbsp;&nbsp; | &nbsp;&nbsp; Generated: {datetime.now():%d %b %Y %I:%M %p}",
+            subtitle_style,
+        ),
+        Spacer(1, 6 * mm),
+    ]
+
+    total_students = len(students)
+    total_present = sum(by_student.get(s.id, {}).get("present", 0) for s in students)
+    total_absent = sum(by_student.get(s.id, {}).get("absent", 0) for s in students)
+    total_marked = total_present + total_absent
+    overall_pct = (total_present / total_marked * 100) if total_marked else 0
+
+    summary_data = [
+        ["Students", "Present Entries", "Absent Entries", "Attendance %"],
+        [str(total_students), str(total_present), str(total_absent), f"{overall_pct:.1f}%" if total_marked else "N/A"],
+    ]
+    summary = Table(summary_data, colWidths=[55 * mm, 55 * mm, 55 * mm, 55 * mm])
+    summary.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F8FAFC")),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([summary, Spacer(1, 6 * mm)])
+
+    sorted_groups = sorted(normalized_groups, key=lambda g: (g[0], g[1]))
+    for index, group in enumerate(sorted_groups):
+        group_students = students_by_group.get(group, [])
+        class_name, division = group
+        assigned_teacher = teacher_display_name(teacher_map.get(group, ""))
+        story.append(Paragraph(
+            f"Class {class_name}{division} - Teacher: {assigned_teacher}",
+            section_style
+        ))
+
+        table_data = [["Sr.", "Student Name", "Present", "Absent", "Marked Days", "Attendance %", "Status"]]
+        for sr, student in enumerate(group_students, start=1):
+            stats = by_student.get(student.id, {"present": 0, "absent": 0, "marked": 0})
+            marked = stats["marked"]
+            pct = (stats["present"] / marked * 100) if marked else 0
+            if not marked:
+                status_label = "No records"
+                pct_text = "N/A"
+            elif pct < 80:
+                status_label = "Below 80%"
+                pct_text = f"{pct:.1f}%"
+            else:
+                status_label = "OK"
+                pct_text = f"{pct:.1f}%"
+            table_data.append([
+                str(sr), str(student.name), str(stats["present"]), str(stats["absent"]),
+                str(marked), pct_text, status_label
+            ])
+
+        if not group_students:
+            table_data.append(["-", "No students found", "-", "-", "-", "-", "-"])
+
+        report_table = Table(
+            table_data,
+            repeatRows=1,
+            colWidths=[13 * mm, 72 * mm, 28 * mm, 28 * mm, 32 * mm, 35 * mm, 34 * mm],
+        )
+        style_commands = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (0, 0), (0, -1), "CENTER"),
+            ("ALIGN", (2, 1), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]
+        for row_index in range(1, len(table_data)):
+            if table_data[row_index][-1] == "Below 80%":
+                style_commands.append(("TEXTCOLOR", (6, row_index), (6, row_index), colors.HexColor("#B91C1C")))
+                style_commands.append(("FONTNAME", (6, row_index), (6, row_index), "Helvetica-Bold"))
+        report_table.setStyle(TableStyle(style_commands))
+        story.append(report_table)
+        if index < len(sorted_groups) - 1:
+            story.append(PageBreak())
+
+    def add_page_number(canvas, doc_obj):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.HexColor("#64748B"))
+        canvas.drawRightString(landscape(A4)[0] - 12 * mm, 7 * mm, f"Page {doc_obj.page}")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 lesson_plans = Table(
     "lesson_plans", assignment_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
@@ -1276,6 +2734,12 @@ lesson_plans = Table(
 
 try:
     student_rows = get_student_summary()
+    if str(st.session_state.role).strip().lower() == "teacher":
+        allowed_groups = get_allowed_teacher_groups() or set()
+        student_rows = [
+            row for row in student_rows
+            if (str(row["class"]), str(row["division"] or "")) in allowed_groups
+        ]
     
 except Exception as e:
     st.error(f"❌ Could not load school database: {e}")
@@ -1367,6 +2831,18 @@ if st.sidebar.button("📊 Attendance Analytics", use_container_width=True):
     st.session_state.current_page = "Analytics"
     st.rerun()
 
+if st.sidebar.button("📄 Monthly PDF Report", use_container_width=True):
+    st.session_state.current_page = "Monthly Report"
+    st.rerun()
+
+if st.sidebar.button("📅 Holiday & School Calendar", use_container_width=True):
+    st.session_state.current_page = "Calendar"
+    st.rerun()
+
+if st.sidebar.button("📝 Student Marks & Results", use_container_width=True):
+    st.session_state.current_page = "Results"
+    st.rerun()
+
 if st.sidebar.button("🔎 Student Search", use_container_width=True):
     st.session_state.current_page = "Search"
     st.rerun()
@@ -1376,6 +2852,12 @@ if st.sidebar.button("🤖 AI Assistant", use_container_width=True):
     st.rerun()
 
 if str(st.session_state.role).strip().lower() == "principal":
+    if st.sidebar.button("👩‍🏫 Teacher Management", use_container_width=True):
+        st.session_state.current_page = "Teachers"
+        st.rerun()
+    if st.sidebar.button("👨‍👩‍👧 Parent Management", use_container_width=True):
+        st.session_state.current_page = "Parents"
+        st.rerun()
     if st.sidebar.button("🔐 Login Protection", use_container_width=True):
         st.session_state.current_page = "Security"
         st.rerun()
@@ -1557,12 +3039,17 @@ PAGE_LABELS = {
     "Attendance": "✅ Student Attendance",
     "Parent Messages": "📨 Parent Messages",
     "Analytics": "📊 Attendance Analytics",
+    "Monthly Report": "📄 Monthly PDF Report",
+    "Calendar": "📅 Holiday & School Calendar",
+    "Results": "📝 Student Marks & Results",
     "Search": "🔎 Student Search",
     "AI": "🤖 AI Assistant",
+    "Teachers": "👩‍🏫 Teacher Management",
+    "Parents": "👨‍👩‍👧 Parent Management",
     "Security": "🔐 Login Protection",
 }
 if (st.session_state.current_page not in PAGE_LABELS or
-        (st.session_state.current_page == "Security" and
+        (st.session_state.current_page in ("Security", "Teachers", "Parents") and
          str(st.session_state.role).strip().lower() != "principal")):
     st.session_state.current_page = "Dashboard"
 
@@ -1627,10 +3114,15 @@ if st.session_state.current_page == "Dashboard":
     feature_pages = [
         ("✅", "Student Attendance", "Browse attendance records and download reports.", "Attendance"),
         ("📊", "Attendance Analytics", "See class, gender and monthly attendance trends.", "Analytics"),
+        ("📄", "Monthly PDF Report", "Generate a printable monthly attendance report.", "Monthly Report"),
+        ("📅", "Holiday & School Calendar", "View holidays, exams, meetings and school events.", "Calendar"),
+        ("📝", "Student Marks & Results", "Enter subject-wise marks and generate student report cards.", "Results"),
         ("🔎", "Student Search", "Find a student and view their attendance details.", "Search"),
         ("🤖", "AI Assistant", "Ask questions about student attendance.", "AI"),
     ]
     if str(st.session_state.role).strip().lower() == "principal":
+        feature_pages.append(("👩‍🏫", "Teacher Management", "Create teacher logins and assign classes.", "Teachers"))
+        feature_pages.append(("👨‍👩‍👧", "Parent Management", "Create parent logins linked to one student.", "Parents"))
         feature_pages.append(("🔐", "Login Protection", "View your school account security settings.", "Security"))
     for row_start in range(0, len(feature_pages), 3):
         columns = st.columns(3)
@@ -1673,7 +3165,7 @@ if st.session_state.current_page == "Dashboard":
                 st.caption("Today's count includes only students whose attendance has been saved.")
             st.dataframe([
                 {"Class": f"{class_name}{division}",
-                 "Class teacher": teacher_map.get((class_name, division), "Not assigned"),
+                 "Class teacher": teacher_display_name(teacher_map.get((class_name, division), "")),
                  "Students": daily_status[(class_name, division)]["students"],
                  "Marked today": f'{daily_status[(class_name, division)]["marked"]}/{daily_status[(class_name, division)]["students"]}',
                  "Absent today": daily_status[(class_name, division)]["absent"]}
@@ -1687,6 +3179,360 @@ if st.session_state.current_page == "Dashboard":
             st.warning(f"Class teacher list unavailable: {exc}")
     else:
         st.info("No student records yet. Import a student CSV to get started.")
+
+if st.session_state.current_page == "Calendar":
+    import calendar as pycalendar
+
+    st.subheader("📅 Holiday & School Calendar")
+    st.caption(
+        "Holidays block attendance for that date. Events, exams and meetings are informational and do not block attendance."
+    )
+
+    is_principal = str(st.session_state.role).strip().lower() == "principal"
+
+    if is_principal:
+        with st.container(border=True):
+            st.markdown("#### ➕ Add calendar entry")
+            with st.form("add_school_calendar_entry", clear_on_submit=True):
+                left, right = st.columns(2)
+                with left:
+                    cal_date = st.date_input("Date", value=date.today(), key="calendar_add_date")
+                    cal_type = st.selectbox(
+                        "Type", ["Holiday", "Event", "Exam", "Meeting"], key="calendar_add_type"
+                    )
+                with right:
+                    cal_title = st.text_input("Title", placeholder="Example: Gandhi Jayanti")
+                    cal_description = st.text_area("Description (optional)", height=90)
+                add_entry = st.form_submit_button("Add to School Calendar", type="primary", use_container_width=True)
+
+            if add_entry:
+                title = cal_title.strip()
+                if not title:
+                    st.error("Enter a title for the calendar entry.")
+                else:
+                    db = SessionLocal()
+                    try:
+                        ensure_school_calendar_table(db)
+                        duplicate = db.execute(select(school_calendar).where(
+                            school_calendar.c.school_code == st.session_state.school_code,
+                            school_calendar.c.event_date == cal_date,
+                            func.lower(school_calendar.c.title) == title.lower(),
+                            func.lower(school_calendar.c.event_type) == cal_type.lower(),
+                        )).first()
+                        if duplicate:
+                            st.warning("This calendar entry already exists for the selected date.")
+                        else:
+                            db.execute(school_calendar.insert().values(
+                                school_code=st.session_state.school_code,
+                                event_date=cal_date,
+                                title=title,
+                                event_type=cal_type,
+                                description=cal_description.strip(),
+                                created_at=datetime.utcnow(),
+                            ))
+                            db.commit()
+                            st.success("✅ Calendar entry added.")
+                            st.rerun()
+                    except Exception as exc:
+                        db.rollback()
+                        st.error(f"Could not add calendar entry: {exc}")
+                    finally:
+                        db.close()
+
+    today_cal = date.today()
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        calendar_year = st.selectbox(
+            "Year", list(range(today_cal.year - 1, today_cal.year + 3)),
+            index=1, key="calendar_filter_year"
+        )
+    with filter_col2:
+        calendar_month = st.selectbox(
+            "Month", list(range(1, 13)), index=today_cal.month - 1,
+            format_func=lambda m: pycalendar.month_name[m], key="calendar_filter_month"
+        )
+
+    month_start = date(calendar_year, calendar_month, 1)
+    month_end = date(calendar_year, calendar_month, pycalendar.monthrange(calendar_year, calendar_month)[1])
+    entries = load_school_calendar(st.session_state.school_code, month_start, month_end)
+
+    st.markdown(f"#### {pycalendar.month_name[calendar_month]} {calendar_year}")
+    if entries:
+        rows = [{
+            "ID": row["id"],
+            "Date": row["event_date"].strftime("%d %b %Y"),
+            "Day": row["event_date"].strftime("%A"),
+            "Type": row["event_type"],
+            "Title": row["title"],
+            "Description": row["description"] or "",
+        } for row in entries]
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+        if is_principal:
+            with st.expander("🗑️ Remove calendar entry"):
+                entry_map = {row["id"]: row for row in entries}
+                delete_cal_id = st.selectbox(
+                    "Select entry", list(entry_map.keys()),
+                    format_func=lambda eid: (
+                        f"{entry_map[eid]['event_date']:%d %b %Y} · "
+                        f"{entry_map[eid]['event_type']} · {entry_map[eid]['title']}"
+                    ),
+                    key="delete_calendar_entry_select",
+                )
+                if st.button("Delete selected calendar entry", key="delete_calendar_entry_button"):
+                    db = SessionLocal()
+                    try:
+                        ensure_school_calendar_table(db)
+                        db.execute(school_calendar.delete().where(
+                            school_calendar.c.id == int(delete_cal_id),
+                            school_calendar.c.school_code == st.session_state.school_code,
+                        ))
+                        db.commit()
+                        st.success("Calendar entry deleted.")
+                        st.rerun()
+                    except Exception as exc:
+                        db.rollback()
+                        st.error(f"Could not delete calendar entry: {exc}")
+                    finally:
+                        db.close()
+    else:
+        st.info("No holidays or events are saved for this month.")
+
+    upcoming = load_school_calendar(
+        st.session_state.school_code,
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=30),
+    )
+    st.divider()
+    st.markdown("#### 🔔 Next 30 days")
+    if upcoming:
+        for row in upcoming[:8]:
+            icon = "🏖️" if str(row["event_type"]).lower() == "holiday" else "📌"
+            st.write(f"{icon} **{row['event_date']:%d %b %Y}** — {row['title']} ({row['event_type']})")
+    else:
+        st.caption("No upcoming entries in the next 30 days.")
+
+
+if st.session_state.current_page == "Results":
+    st.subheader("📝 Student Marks & Result Module")
+    st.caption("Enter subject-wise marks, update corrections, preview totals and download a PDF report card.")
+
+    if not student_rows:
+        st.info("No students are available for your account. Principal can add students or assign a class to the teacher first.")
+    else:
+        current_year = date.today().year
+        default_academic_year = f"{current_year}-{str(current_year + 1)[-2:]}"
+        groups = sorted({(str(row["class"]), str(row["division"] or "")) for row in student_rows})
+
+        entry_tab, report_tab = st.tabs(["✍️ Enter / Update Marks", "📄 Report Card"])
+
+        with entry_tab:
+            st.markdown("#### Subject-wise marks")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                result_group = st.selectbox(
+                    "Class & division", groups,
+                    format_func=lambda g: f"Class {g[0]}{g[1]}",
+                    key="result_entry_group",
+                )
+            group_students = [
+                row for row in student_rows
+                if (str(row["class"]), str(row["division"] or "")) == result_group
+            ]
+            student_map = {int(row["id"]): row for row in group_students}
+            with col_b:
+                result_student_id = st.selectbox(
+                    "Student", list(student_map.keys()),
+                    format_func=lambda sid: student_map[sid]["name"],
+                    key="result_entry_student",
+                )
+
+            with st.form("student_marks_entry_form"):
+                f1, f2 = st.columns(2)
+                with f1:
+                    academic_year = st.text_input("Academic year", value=default_academic_year, placeholder="2026-27")
+                    exam_name = st.text_input("Exam / Term", placeholder="Unit Test 1 / Semester 1")
+                    subject_name = st.text_input("Subject", placeholder="Mathematics")
+                with f2:
+                    max_marks = st.number_input("Maximum marks", min_value=1, max_value=1000, value=100, step=1)
+                    marks_obtained = st.number_input("Marks obtained", min_value=0, max_value=1000, value=0, step=1)
+                    remarks = st.text_input("Remarks (optional)", placeholder="Good / Needs practice")
+                save_marks = st.form_submit_button("Save / Update Marks", type="primary", use_container_width=True)
+
+            if save_marks:
+                year = academic_year.strip()
+                exam = exam_name.strip()
+                subject = subject_name.strip()
+                if not year or not exam or not subject:
+                    st.error("Academic year, exam/term and subject are required.")
+                elif int(marks_obtained) > int(max_marks):
+                    st.error("Marks obtained cannot be greater than maximum marks.")
+                else:
+                    db = SessionLocal()
+                    try:
+                        ensure_student_results_table(db)
+                        existing = db.execute(select(student_results).where(
+                            student_results.c.school_code == st.session_state.school_code,
+                            student_results.c.student_id == int(result_student_id),
+                            func.lower(student_results.c.academic_year) == year.lower(),
+                            func.lower(student_results.c.exam_name) == exam.lower(),
+                            func.lower(student_results.c.subject_name) == subject.lower(),
+                        )).mappings().first()
+                        values = dict(
+                            school_code=st.session_state.school_code,
+                            student_id=int(result_student_id),
+                            academic_year=year,
+                            exam_name=exam,
+                            subject_name=subject,
+                            max_marks=int(max_marks),
+                            marks_obtained=int(marks_obtained),
+                            remarks=remarks.strip(),
+                            updated_by=st.session_state.username,
+                            updated_at=datetime.utcnow(),
+                        )
+                        if existing:
+                            db.execute(student_results.update().where(
+                                student_results.c.id == int(existing["id"])
+                            ).values(**values))
+                            action = "updated"
+                        else:
+                            db.execute(student_results.insert().values(**values))
+                            action = "saved"
+                        db.commit()
+                        st.success(f"✅ {subject} marks {action} for {student_map[int(result_student_id)]['name']}.")
+                        st.rerun()
+                    except Exception as exc:
+                        db.rollback()
+                        st.error(f"Could not save marks: {exc}")
+                    finally:
+                        db.close()
+
+            selected_existing = load_student_results(
+                st.session_state.school_code, student_id=int(result_student_id)
+            )
+            if selected_existing:
+                st.markdown("#### Saved marks for this student")
+                st.dataframe([
+                    {
+                        "Academic Year": row["academic_year"],
+                        "Exam": row["exam_name"],
+                        "Subject": row["subject_name"],
+                        "Marks": int(row["marks_obtained"]),
+                        "Out of": int(row["max_marks"]),
+                        "%": round((int(row["marks_obtained"]) / int(row["max_marks"]) * 100), 1) if int(row["max_marks"]) else 0,
+                        "Remarks": row.get("remarks") or "",
+                        "Updated By": row.get("updated_by") or "",
+                    }
+                    for row in selected_existing
+                ], hide_index=True, use_container_width=True)
+
+                if str(st.session_state.role).strip().lower() == "principal":
+                    with st.expander("🗑️ Delete a marks entry"):
+                        row_map = {int(row["id"]): row for row in selected_existing}
+                        delete_result_id = st.selectbox(
+                            "Select entry", list(row_map.keys()),
+                            format_func=lambda rid: (
+                                f"{row_map[rid]['academic_year']} · {row_map[rid]['exam_name']} · "
+                                f"{row_map[rid]['subject_name']} · {row_map[rid]['marks_obtained']}/{row_map[rid]['max_marks']}"
+                            ),
+                            key="delete_result_entry_select",
+                        )
+                        if st.button("Delete selected marks entry", key="delete_result_entry_button"):
+                            db = SessionLocal()
+                            try:
+                                ensure_student_results_table(db)
+                                db.execute(student_results.delete().where(
+                                    student_results.c.id == int(delete_result_id),
+                                    student_results.c.school_code == st.session_state.school_code,
+                                ))
+                                db.commit()
+                                st.success("Marks entry deleted.")
+                                st.rerun()
+                            except Exception as exc:
+                                db.rollback()
+                                st.error(f"Could not delete marks: {exc}")
+                            finally:
+                                db.close()
+
+        with report_tab:
+            st.markdown("#### Student report card")
+            report_group = st.selectbox(
+                "Class & division", groups,
+                format_func=lambda g: f"Class {g[0]}{g[1]}",
+                key="report_group",
+            )
+            report_students = [
+                row for row in student_rows
+                if (str(row["class"]), str(row["division"] or "")) == report_group
+            ]
+            report_student_map = {int(row["id"]): row for row in report_students}
+            report_student_id = st.selectbox(
+                "Student", list(report_student_map.keys()),
+                format_func=lambda sid: report_student_map[sid]["name"],
+                key="report_student",
+            )
+            all_rows = load_student_results(st.session_state.school_code, student_id=int(report_student_id))
+            if not all_rows:
+                st.info("No marks have been entered for this student yet.")
+            else:
+                report_keys = []
+                for row in all_rows:
+                    key = (row["academic_year"], row["exam_name"])
+                    if key not in report_keys:
+                        report_keys.append(key)
+                selected_report = st.selectbox(
+                    "Academic year & exam", report_keys,
+                    format_func=lambda item: f"{item[0]} · {item[1]}",
+                    key="report_exam_key",
+                )
+                rows = [
+                    row for row in all_rows
+                    if (row["academic_year"], row["exam_name"]) == selected_report
+                ]
+                total_obtained, total_max, percentage = result_summary(rows)
+                metrics = st.columns(3)
+                metrics[0].metric("Total Marks", total_obtained)
+                metrics[1].metric("Out of", total_max)
+                metrics[2].metric("Percentage", f"{percentage:.1f}%")
+                st.dataframe([
+                    {
+                        "Subject": row["subject_name"],
+                        "Marks": int(row["marks_obtained"]),
+                        "Out of": int(row["max_marks"]),
+                        "%": round((int(row["marks_obtained"]) / int(row["max_marks"]) * 100), 1) if int(row["max_marks"]) else 0,
+                        "Remarks": row.get("remarks") or "",
+                    }
+                    for row in rows
+                ], hide_index=True, use_container_width=True)
+
+                db = SessionLocal()
+                try:
+                    student_obj = db.query(Student).filter(
+                        Student.id == int(report_student_id),
+                        Student.school_code == st.session_state.school_code,
+                    ).first()
+                    if not student_obj:
+                        st.error("Student record could not be found.")
+                    else:
+                        pdf_bytes = build_student_report_card_pdf(
+                            st.session_state.school_name, st.session_state.school_code,
+                            student_obj, selected_report[0], selected_report[1], rows,
+                        )
+                        safe_exam = re.sub(r"[^A-Za-z0-9_-]+", "_", selected_report[1]).strip("_") or "exam"
+                        st.download_button(
+                            "📥 Download Report Card PDF",
+                            data=pdf_bytes,
+                            file_name=f"{student_obj.name.replace(' ', '_')}_{safe_exam}_report_card.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True,
+                            key="staff_report_card_download",
+                        )
+                except Exception as exc:
+                    st.error(f"Could not generate report card: {exc}")
+                finally:
+                    db.close()
+
 
 if st.session_state.current_page == 'Analytics':
     # =========================================================
@@ -2074,6 +3920,92 @@ if st.session_state.current_page == 'Analytics':
     finally:
         db.close()
 
+if st.session_state.current_page == "Monthly Report":
+    import calendar
+
+    st.subheader("📄 Monthly Attendance PDF Report")
+    st.caption(
+        "Choose a month and class. The report uses attendance records saved for that month. "
+        "Teachers can only generate reports for their assigned classes."
+    )
+
+    available_groups = sorted({
+        (str(row["class"]), str(row["division"] or ""))
+        for row in student_rows
+    })
+
+    if not available_groups:
+        if str(st.session_state.role).strip().lower() == "teacher":
+            st.warning("No assigned class is available for this teacher account.")
+        else:
+            st.info("No class/student data is available yet.")
+    else:
+        today_value = date.today()
+        year_options = list(range(today_value.year - 2, today_value.year + 1))
+        report_year = st.selectbox(
+            "Year", year_options, index=len(year_options) - 1, key="monthly_report_year"
+        )
+        month_options = list(range(1, 13))
+        report_month = st.selectbox(
+            "Month", month_options, index=today_value.month - 1,
+            format_func=lambda m: calendar.month_name[m], key="monthly_report_month"
+        )
+
+        scope_options = ["All available classes"] + available_groups
+        report_scope = st.selectbox(
+            "Class and division",
+            scope_options,
+            format_func=lambda value: (
+                value if isinstance(value, str)
+                else f"Class {value[0]}{value[1]}"
+            ),
+            key="monthly_report_scope",
+        )
+
+        selected_report_groups = (
+            available_groups if report_scope == "All available classes" else [report_scope]
+        )
+
+        preview_rows = [
+            row for row in student_rows
+            if (str(row["class"]), str(row["division"] or "")) in set(selected_report_groups)
+        ]
+        st.info(
+            f"Report scope: {calendar.month_name[report_month]} {report_year} · "
+            f"{len(selected_report_groups)} class(es) · {len(preview_rows)} student(s)"
+        )
+
+        if st.button("Generate Monthly PDF", type="primary", use_container_width=True, key="generate_monthly_pdf"):
+            try:
+                pdf_bytes = build_monthly_attendance_pdf(
+                    school_code=st.session_state.school_code,
+                    school_name=st.session_state.school_name or os.getenv("SCHOOL_NAME", "School AI"),
+                    year=report_year,
+                    month=report_month,
+                    groups=selected_report_groups,
+                )
+                st.session_state["monthly_pdf_bytes"] = pdf_bytes
+                st.session_state["monthly_pdf_filename"] = (
+                    f"attendance_{report_year}_{report_month:02d}.pdf"
+                    if report_scope == "All available classes"
+                    else f"attendance_class_{report_scope[0]}{report_scope[1]}_{report_year}_{report_month:02d}.pdf"
+                )
+                st.success("✅ Monthly attendance PDF is ready.")
+            except Exception as exc:
+                st.error(f"Could not generate PDF: {exc}")
+
+        if st.session_state.get("monthly_pdf_bytes"):
+            st.download_button(
+                "📥 Download Monthly PDF",
+                data=st.session_state["monthly_pdf_bytes"],
+                file_name=st.session_state.get("monthly_pdf_filename", "monthly_attendance.pdf"),
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+                key="download_monthly_pdf",
+            )
+
+
 if st.session_state.current_page == 'Search':
     # =========================================================
     # STUDENT SEARCH
@@ -2142,6 +4074,326 @@ if st.session_state.current_page == 'Search':
 
 
     st.divider()
+
+if st.session_state.current_page == "Parents":
+    st.subheader("👨‍👩‍👧 Parent Management")
+    st.caption("Create a parent login and link it to exactly one student. Parents can only view that child's attendance.")
+
+    db = SessionLocal()
+    try:
+        ensure_parent_accounts_table(db)
+        school_students = db.query(Student).filter(
+            Student.school_code == st.session_state.school_code
+        ).order_by(Student.class_name, Student.division, Student.name).all()
+        existing_parents = db.execute(
+            select(parent_accounts).where(
+                parent_accounts.c.school_code == st.session_state.school_code
+            ).order_by(parent_accounts.c.name)
+        ).mappings().all()
+    finally:
+        db.close()
+
+    if not school_students:
+        st.info("Add students first, then create a parent login.")
+    else:
+        student_map = {student.id: student for student in school_students}
+        with st.container(border=True):
+            st.markdown("#### ➕ Create Parent Login")
+            with st.form("create_parent_account_form"):
+                parent_name = st.text_input("Parent / guardian name", placeholder="Example: Rajesh Patil")
+                parent_username = st.text_input("Parent username", placeholder="Example: rahul_parent")
+                selected_student_id = st.selectbox(
+                    "Link to student",
+                    list(student_map.keys()),
+                    format_func=lambda sid: (
+                        f"{student_map[sid].name} · Class "
+                        f"{student_map[sid].class_name}{student_map[sid].division or ''} · ID {sid}"
+                    ),
+                )
+                linked_phone = (student_map[selected_student_id].parent_contact or "").strip()
+                st.caption(f"Parent contact on student record: {linked_phone or 'Not added'}")
+                parent_password = st.text_input("Temporary password", type="password")
+                parent_confirm = st.text_input("Confirm password", type="password")
+                create_parent = st.form_submit_button("Create Parent Account", type="primary")
+
+            if create_parent:
+                clean_name = parent_name.strip()
+                clean_username = parent_username.strip()
+                if not clean_name or not clean_username:
+                    st.error("Parent name and username are required.")
+                elif not re.fullmatch(r"[A-Za-z0-9_.-]{4,50}", clean_username):
+                    st.error("Username must be 4–50 characters and use only letters, numbers, dot, underscore or hyphen.")
+                elif len(parent_password) < 8:
+                    st.error("Password must be at least 8 characters.")
+                elif parent_password != parent_confirm:
+                    st.error("Passwords do not match.")
+                else:
+                    db = SessionLocal()
+                    try:
+                        ensure_parent_accounts_table(db)
+                        staff_exists = db.query(User).filter(
+                            func.lower(User.username) == clean_username.lower()
+                        ).first()
+                        parent_exists = db.execute(
+                            select(parent_accounts.c.id).where(
+                                func.lower(parent_accounts.c.username) == clean_username.lower()
+                            )
+                        ).first()
+                        linked_exists = db.execute(
+                            select(parent_accounts.c.id).where(
+                                parent_accounts.c.school_code == st.session_state.school_code,
+                                parent_accounts.c.student_id == int(selected_student_id),
+                            )
+                        ).first()
+                        if staff_exists or parent_exists:
+                            st.error("This username is already in use. Choose another username.")
+                        elif linked_exists:
+                            st.error("This student already has a parent login. Delete or update the existing account first.")
+                        else:
+                            password_hash = bcrypt.hashpw(
+                                parent_password.encode("utf-8"), bcrypt.gensalt()
+                            ).decode("utf-8")
+                            db.execute(parent_accounts.insert().values(
+                                user_id=f"parent-{secrets.token_hex(6)}",
+                                name=clean_name,
+                                username=clean_username,
+                                password_hash=password_hash,
+                                school_code=st.session_state.school_code,
+                                student_id=int(selected_student_id),
+                                phone=linked_phone,
+                                created_at=datetime.utcnow(),
+                            ))
+                            db.commit()
+                            st.success(
+                                f"✅ Parent login created for {student_map[selected_student_id].name}. "
+                                f"Username: {clean_username}"
+                            )
+                            st.rerun()
+                    except Exception as exc:
+                        db.rollback()
+                        st.error(f"Could not create parent account: {exc}")
+                    finally:
+                        db.close()
+
+    st.divider()
+    st.markdown("#### Existing Parent Accounts")
+    if not existing_parents:
+        st.info("No parent accounts created yet.")
+    else:
+        rows = []
+        for account in existing_parents:
+            student = next((s for s in school_students if s.id == account["student_id"]), None)
+            rows.append({
+                "Parent": account["name"],
+                "Username": account["username"],
+                "Student": student.name if student else f"Student ID {account['student_id']}",
+                "Class": f"{student.class_name}{student.division or ''}" if student else "-",
+                "Phone": account.get("phone") or "",
+            })
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+
+        delete_options = {
+            account["id"]: f"{account['name']} (@{account['username']})"
+            for account in existing_parents
+        }
+        with st.expander("🗑️ Delete parent login"):
+            delete_parent_id = st.selectbox(
+                "Select parent account",
+                list(delete_options.keys()),
+                format_func=lambda pid: delete_options[pid],
+                key="delete_parent_account_select",
+            )
+            if st.button("Delete selected parent login", key="delete_parent_account_button"):
+                db = SessionLocal()
+                try:
+                    ensure_parent_accounts_table(db)
+                    db.execute(parent_accounts.delete().where(
+                        parent_accounts.c.id == int(delete_parent_id),
+                        parent_accounts.c.school_code == st.session_state.school_code,
+                    ))
+                    db.commit()
+                    st.success("Parent login deleted.")
+                    st.rerun()
+                except Exception as exc:
+                    db.rollback()
+                    st.error(f"Could not delete parent login: {exc}")
+                finally:
+                    db.close()
+
+
+if st.session_state.current_page == "Teachers":
+    st.subheader("👩‍🏫 Teacher Management")
+    st.caption("Create teacher login IDs first, then assign each teacher to a class and division.")
+
+    teacher_accounts = load_teacher_accounts()
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        st.markdown("### ➕ Create Teacher Account")
+        with st.form("create_teacher_account"):
+            teacher_full_name = st.text_input("Teacher full name", placeholder="Rahul Sir")
+            teacher_username = st.text_input("Login username", placeholder="rahul01")
+            teacher_phone = st.text_input("Mobile number (optional)", placeholder="+919876543210")
+            teacher_password = st.text_input("Temporary password", type="password")
+            teacher_confirm = st.text_input("Confirm password", type="password")
+            create_teacher = st.form_submit_button("Create Teacher Login", type="primary", use_container_width=True)
+
+        if create_teacher:
+            name = teacher_full_name.strip()
+            username = teacher_username.strip()
+            phone = teacher_phone.strip()
+            if not name:
+                st.error("Enter the teacher's full name.")
+            elif not re.fullmatch(r"[A-Za-z0-9_.-]{4,50}", username):
+                st.error("Username must be 4–50 characters and use letters, numbers, dot, underscore or hyphen.")
+            elif phone and not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+                st.error("Use mobile format like +919876543210, or leave it blank.")
+            elif len(teacher_password) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif teacher_password != teacher_confirm:
+                st.error("Passwords do not match.")
+            else:
+                db = SessionLocal()
+                try:
+                    existing = db.query(User).filter(
+                        func.lower(User.username) == username.lower()
+                    ).first()
+                    if existing:
+                        st.error("This username already exists. Choose another username.")
+                    else:
+                        password_hash = bcrypt.hashpw(
+                            teacher_password.encode("utf-8"), bcrypt.gensalt()
+                        ).decode("utf-8")
+                        values = dict(
+                            user_id=f"teacher-{secrets.token_hex(6)}",
+                            name=name,
+                            username=username,
+                            password_hash=password_hash,
+                            role="teacher",
+                            school_code=st.session_state.school_code,
+                        )
+                        # Current User model supports phone fields; keep this defensive for older databases.
+                        if hasattr(User, "phone"):
+                            values["phone"] = phone
+                        if hasattr(User, "phone_verified"):
+                            values["phone_verified"] = 0
+                        db.add(User(**values))
+                        db.commit()
+                        st.success(f"✅ Teacher login created: {username}")
+                        st.info("Share the username and temporary password with the teacher securely. The password is not shown again.")
+                        st.rerun()
+                except Exception as exc:
+                    db.rollback()
+                    st.error(f"Could not create teacher account: {exc}")
+                finally:
+                    db.close()
+
+    with right:
+        st.markdown("### 🔗 Assign Teacher to Class")
+        teacher_accounts = load_teacher_accounts()
+        all_groups = sorted({(str(row["class"]), str(row["division"] or "")) for row in student_rows})
+        if not teacher_accounts:
+            st.info("Create a teacher account first.")
+        elif not all_groups:
+            st.info("Add students/classes first.")
+        else:
+            teacher_usernames = list(teacher_accounts.keys())
+            with st.form("assign_teacher_account"):
+                selected_teacher_username = st.selectbox(
+                    "Teacher",
+                    teacher_usernames,
+                    format_func=lambda u: f"{teacher_accounts[u]['name']} (@{u})",
+                )
+                selected_teacher_group = st.selectbox(
+                    "Class and division",
+                    all_groups,
+                    format_func=lambda g: f"Class {g[0]}{g[1]}",
+                )
+                assign_teacher = st.form_submit_button("Assign Teacher", type="primary", use_container_width=True)
+
+            if assign_teacher:
+                class_name, division_name = selected_teacher_group
+                db = SessionLocal()
+                try:
+                    assignment_metadata.create_all(db.get_bind(), tables=[teacher_assignments], checkfirst=True)
+                    existing = db.execute(select(teacher_assignments).where(
+                        teacher_assignments.c.school_code == st.session_state.school_code,
+                        teacher_assignments.c.class_name == class_name,
+                        teacher_assignments.c.division == division_name,
+                    )).first()
+                    if existing:
+                        db.execute(teacher_assignments.update().where(
+                            teacher_assignments.c.school_code == st.session_state.school_code,
+                            teacher_assignments.c.class_name == class_name,
+                            teacher_assignments.c.division == division_name,
+                        ).values(teacher_name=selected_teacher_username))
+                    else:
+                        db.execute(teacher_assignments.insert().values(
+                            school_code=st.session_state.school_code,
+                            class_name=class_name,
+                            division=division_name,
+                            teacher_name=selected_teacher_username,
+                        ))
+                    db.commit()
+                    st.success(
+                        f"✅ {teacher_accounts[selected_teacher_username]['name']} assigned to "
+                        f"Class {class_name}{division_name}."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    db.rollback()
+                    st.error(f"Could not assign teacher: {exc}")
+                finally:
+                    db.close()
+
+    st.divider()
+    st.markdown("### 📋 Teacher Accounts & Assignments")
+    teacher_accounts = load_teacher_accounts()
+    assignments = load_teacher_assignments()
+    assignment_rows = []
+    for (class_name, division), assigned_value in sorted(assignments.items()):
+        account = teacher_accounts.get(str(assigned_value))
+        assignment_rows.append({
+            "Teacher": account["name"] if account else str(assigned_value),
+            "Username": account["username"] if account else str(assigned_value),
+            "Class": f"{class_name}{division}",
+        })
+    if assignment_rows:
+        st.dataframe(assignment_rows, hide_index=True, use_container_width=True)
+        with st.form("remove_teacher_assignment"):
+            assignment_keys = list(sorted(assignments.keys()))
+            remove_group = st.selectbox(
+                "Remove class assignment",
+                assignment_keys,
+                format_func=lambda g: f"Class {g[0]}{g[1]} — {teacher_display_name(assignments[g])}",
+            )
+            remove_assignment = st.form_submit_button("Unassign Teacher")
+        if remove_assignment:
+            db = SessionLocal()
+            try:
+                db.execute(teacher_assignments.delete().where(
+                    teacher_assignments.c.school_code == st.session_state.school_code,
+                    teacher_assignments.c.class_name == remove_group[0],
+                    teacher_assignments.c.division == remove_group[1],
+                ))
+                db.commit()
+                st.success(f"Teacher unassigned from Class {remove_group[0]}{remove_group[1]}.")
+                st.rerun()
+            except Exception as exc:
+                db.rollback()
+                st.error(f"Could not remove assignment: {exc}")
+            finally:
+                db.close()
+    else:
+        st.info("No teacher assignments yet.")
+
+    if teacher_accounts:
+        st.markdown("### 👤 Existing Teacher Logins")
+        st.dataframe([
+            {"Name": item["name"], "Username": username, "School": st.session_state.school_code}
+            for username, item in teacher_accounts.items()
+        ], hide_index=True, use_container_width=True)
+
 
 if st.session_state.current_page == 'Attendance':
     is_principal = str(st.session_state.role).strip().lower() == "principal"
@@ -2257,45 +4509,21 @@ if st.session_state.current_page == 'Attendance':
             class_name, division_name = selected_group
             teacher_name = class_teachers.get(selected_group, "")
             if is_principal:
-                st.markdown("#### 👩‍🏫 Assign class teacher")
-                with st.form("class_teacher_form"):
-                    new_teacher = st.text_input("Class teacher name", value=teacher_name,
-                                                placeholder="Enter teacher's full name")
-                    save_teacher = st.form_submit_button("💾 Save teacher name", type="primary")
-                if save_teacher:
-                    if not new_teacher.strip():
-                        st.error("Enter a teacher name.")
-                    else:
-                        db = SessionLocal()
-                        try:
-                            existing = db.execute(select(teacher_assignments).where(
-                                teacher_assignments.c.school_code == st.session_state.school_code,
-                                teacher_assignments.c.class_name == class_name,
-                                teacher_assignments.c.division == division_name,
-                            )).first()
-                            if existing:
-                                db.execute(teacher_assignments.update().where(
-                                    teacher_assignments.c.school_code == st.session_state.school_code,
-                                    teacher_assignments.c.class_name == class_name,
-                                    teacher_assignments.c.division == division_name,
-                                ).values(teacher_name=new_teacher.strip()))
-                            else:
-                                db.execute(teacher_assignments.insert().values(
-                                    school_code=st.session_state.school_code,
-                                    class_name=class_name,
-                                    division=division_name,
-                                    teacher_name=new_teacher.strip(),
-                                ))
-                            db.commit()
-                            class_teachers[selected_group] = new_teacher.strip()
-                            st.success(f"Teacher {new_teacher.strip()} saved for Class {class_name}{division_name}.")
-                        except Exception as exc:
-                            db.rollback()
-                            st.error(f"Could not save teacher: {exc}")
-                        finally:
-                            db.close()
+                teacher_accounts = load_teacher_accounts()
+                st.markdown("#### 👩‍🏫 Assigned class teacher")
+                if teacher_name:
+                    st.info(f"Current teacher: {teacher_display_name(teacher_name)}")
+                else:
+                    st.info("No teacher assigned yet.")
+                if teacher_accounts:
+                    st.caption("Use Teacher Management to create logins and change class assignments.")
+                    if st.button("Open Teacher Management →", key=f"open_teacher_management_{class_name}_{division_name}"):
+                        st.session_state.current_page = "Teachers"
+                        st.rerun()
+                else:
+                    st.warning("No teacher login exists yet. Create one in Teacher Management.")
             else:
-                st.info(f"👩‍🏫 Class teacher: {teacher_name or 'Not assigned yet'}")
+                st.info(f"👩‍🏫 Class teacher: {teacher_display_name(teacher_name)}")
 
             if is_principal:
                 with st.expander("📱 Parent phone numbers for absence alerts"):
@@ -2346,6 +4574,25 @@ if st.session_state.current_page == 'Attendance':
 
             attendance_date = st.date_input("Attendance date", value=date.today(),
                                             max_value=date.today(), key="mark_date")
+            holiday_entry = get_holiday_for_date(st.session_state.school_code, attendance_date)
+            if holiday_entry:
+                st.error(
+                    f"🏖️ {attendance_date:%d %b %Y} is marked as a school holiday: "
+                    f"{holiday_entry['title']}. Attendance cannot be saved for this date."
+                )
+            else:
+                day_entries = load_school_calendar(
+                    st.session_state.school_code, attendance_date, attendance_date
+                )
+                non_holiday_entries = [
+                    row for row in day_entries if str(row["event_type"]).lower() != "holiday"
+                ]
+                if non_holiday_entries:
+                    st.info(
+                        "📅 " + " · ".join(
+                            f"{row['event_type']}: {row['title']}" for row in non_holiday_entries
+                        )
+                    )
             group_students = sorted(
                 [row for row in student_rows if (str(row["class"]), str(row["division"] or "")) == selected_group],
                 key=lambda row: (row["name"], row["id"]),
@@ -2372,8 +4619,13 @@ if st.session_state.current_page == 'Attendance':
                     column_config={"Present": st.column_config.CheckboxColumn("Present", help="Uncheck for absent")},
                     key=f"daily_attendance_editor_{class_name}_{division_name}_{attendance_date}",
                 )
-                save_attendance = st.form_submit_button("💾 Save class attendance", type="primary")
+                save_attendance = st.form_submit_button(
+                    "💾 Save class attendance", type="primary", disabled=bool(holiday_entry)
+                )
             if save_attendance:
+                if get_holiday_for_date(st.session_state.school_code, attendance_date):
+                    st.error("Attendance is blocked because this date is marked as a school holiday.")
+                    st.stop()
                 db = SessionLocal()
                 try:
                     # Read fresh records inside the transaction to handle corrections.
