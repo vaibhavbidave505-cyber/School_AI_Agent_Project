@@ -1,5 +1,8 @@
 ﻿.env
 school.db
+database_sqlite_backup.py
+school_backup_*.db
+
 venv/
 __pycache__/
 *.pyc

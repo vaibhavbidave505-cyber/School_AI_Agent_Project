@@ -473,6 +473,60 @@ from urllib.request import Request, urlopen
 load_dotenv()
 
 # =========================================================
+# AUDIT LOG
+# =========================================================
+audit_metadata = MetaData()
+audit_logs = Table(
+    "audit_logs", audit_metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("school_code", String(100), nullable=True),
+    Column("username", String(100), nullable=False),
+    Column("role", String(50), nullable=False),
+    Column("action", String(100), nullable=False),
+    Column("entity_type", String(100), nullable=True),
+    Column("entity_id", String(100), nullable=True),
+    Column("details", Text, nullable=True),
+    Column("created_at", DateTime, nullable=False),
+)
+
+def ensure_audit_log_table(db):
+    audit_metadata.create_all(db.get_bind(), tables=[audit_logs], checkfirst=True)
+
+def write_audit_log(action, details="", entity_type="", entity_id="", school_code=None, username=None, role=None):
+    """Write a non-blocking audit record. Audit failures must never break the main action."""
+    db = SessionLocal()
+    try:
+        ensure_audit_log_table(db)
+        db.execute(audit_logs.insert().values(
+            school_code=(school_code if school_code is not None else st.session_state.get("school_code", "")) or "",
+            username=(username if username is not None else st.session_state.get("username", "")) or "system",
+            role=(role if role is not None else st.session_state.get("role", "")) or "system",
+            action=str(action),
+            entity_type=str(entity_type or ""),
+            entity_id=str(entity_id or ""),
+            details=str(details or ""),
+            created_at=datetime.utcnow(),
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+def load_audit_logs(school_code=None, limit=500):
+    db = SessionLocal()
+    try:
+        ensure_audit_log_table(db)
+        query = select(audit_logs)
+        if school_code is not None:
+            query = query.where(audit_logs.c.school_code == str(school_code))
+        return db.execute(
+            query.order_by(audit_logs.c.created_at.desc()).limit(int(limit))
+        ).mappings().all()
+    finally:
+        db.close()
+
+# =========================================================
 # PARENT ACCOUNTS
 # =========================================================
 # Parent logins are stored separately from staff accounts so a parent can
@@ -1256,6 +1310,11 @@ def render_otp_page():
                 db.commit()
                 clear_otp_state()
                 create_authenticated_session(user)
+                write_audit_log(
+                    "LOGIN_SUCCESS", "Principal login completed with OTP.",
+                    entity_type="user", entity_id=user.user_id,
+                    school_code=user.school_code, username=user.username, role=user.role,
+                )
                 st.success("✅ OTP verified. Login successful!")
                 st.rerun()
             finally:
@@ -1600,6 +1659,11 @@ def login_page():
                     elif valid_login:
                         if is_super_admin:
                             create_super_admin_session(username)
+                            write_audit_log(
+                                "LOGIN_SUCCESS", "Super Admin login successful.",
+                                entity_type="user", entity_id="super-admin",
+                                school_code="", username=username, role="super_admin",
+                            )
                             st.success("✅ Super Admin login successful!")
                             st.rerun()
                         elif user and str(user.role).strip().lower() == "principal":
@@ -1610,10 +1674,20 @@ def login_page():
                                 st.error(f"Could not send OTP: {exc}")
                         elif user:
                             create_authenticated_session(user)
+                            write_audit_log(
+                                "LOGIN_SUCCESS", "Staff login successful.",
+                                entity_type="user", entity_id=user.user_id,
+                                school_code=user.school_code, username=user.username, role=user.role,
+                            )
                             st.success("✅ Login successful!")
                             st.rerun()
                         else:
                             create_parent_authenticated_session(parent)
+                            write_audit_log(
+                                "LOGIN_SUCCESS", "Parent login successful.",
+                                entity_type="parent", entity_id=parent["user_id"],
+                                school_code=parent["school_code"], username=parent["username"], role="parent",
+                            )
                             st.success("✅ Parent login successful!")
                             st.rerun()
                     else:
@@ -1876,6 +1950,7 @@ def render_super_admin_portal():
         st.caption(f"👤 {st.session_state.username}")
         session_countdown()
         if st.button("🚪 Logout", key="super_admin_logout", use_container_width=True):
+            write_audit_log("LOGOUT", "Super Admin logged out.")
             clear_login()
             st.rerun()
 
@@ -2111,6 +2186,7 @@ def render_parent_portal():
         st.caption(f"🎓 {student.name} · Class {student.class_name}{student.division or ''}")
         session_countdown()
         if st.button("🚪 Logout", key="parent_logout", use_container_width=True):
+            write_audit_log("LOGOUT", "Parent logged out.", entity_type="parent", entity_id=st.session_state.get("user_id"))
             clear_login()
             st.rerun()
 
@@ -2861,6 +2937,9 @@ if str(st.session_state.role).strip().lower() == "principal":
     if st.sidebar.button("🔐 Login Protection", use_container_width=True):
         st.session_state.current_page = "Security"
         st.rerun()
+    if st.sidebar.button("🧾 Audit Log", use_container_width=True):
+        st.session_state.current_page = "Audit"
+        st.rerun()
 
 
 
@@ -3029,6 +3108,7 @@ if str(st.session_state.role).strip().lower() == "principal":
 session_countdown()
 
 if st.sidebar.button("🚪 Logout"):
+    write_audit_log("LOGOUT", "User logged out.", entity_type="user", entity_id=st.session_state.get("user_id"))
     clear_login()
     st.rerun()
 
@@ -3047,9 +3127,10 @@ PAGE_LABELS = {
     "Teachers": "👩‍🏫 Teacher Management",
     "Parents": "👨‍👩‍👧 Parent Management",
     "Security": "🔐 Login Protection",
+    "Audit": "🧾 Audit Log",
 }
 if (st.session_state.current_page not in PAGE_LABELS or
-        (st.session_state.current_page in ("Security", "Teachers", "Parents") and
+        (st.session_state.current_page in ("Security", "Teachers", "Parents", "Audit") and
          str(st.session_state.role).strip().lower() != "principal")):
     st.session_state.current_page = "Dashboard"
 
@@ -3124,6 +3205,7 @@ if st.session_state.current_page == "Dashboard":
         feature_pages.append(("👩‍🏫", "Teacher Management", "Create teacher logins and assign classes.", "Teachers"))
         feature_pages.append(("👨‍👩‍👧", "Parent Management", "Create parent logins linked to one student.", "Parents"))
         feature_pages.append(("🔐", "Login Protection", "View your school account security settings.", "Security"))
+        feature_pages.append(("🧾", "Audit Log", "See logins, attendance changes, deletes and other important actions.", "Audit"))
     for row_start in range(0, len(feature_pages), 3):
         columns = st.columns(3)
         for column, (icon, name, description, page) in zip(columns, feature_pages[row_start:row_start + 3]):
@@ -3231,6 +3313,10 @@ if st.session_state.current_page == "Calendar":
                                 created_at=datetime.utcnow(),
                             ))
                             db.commit()
+                            write_audit_log(
+                                "CALENDAR_CREATE", f"{cal_type}: {cal_title.strip()} on {cal_date}.",
+                                entity_type="calendar", entity_id=str(cal_date),
+                            )
                             st.success("✅ Calendar entry added.")
                             st.rerun()
                     except Exception as exc:
@@ -3287,7 +3373,13 @@ if st.session_state.current_page == "Calendar":
                             school_calendar.c.id == int(delete_cal_id),
                             school_calendar.c.school_code == st.session_state.school_code,
                         ))
+                        deleted_entry = entry_map.get(delete_cal_id)
                         db.commit()
+                        write_audit_log(
+                            "CALENDAR_DELETE",
+                            (f"Deleted {deleted_entry['event_type']}: {deleted_entry['title']} on {deleted_entry['event_date']}." if deleted_entry else "Deleted calendar entry."),
+                            entity_type="calendar", entity_id=delete_cal_id,
+                        )
                         st.success("Calendar entry deleted.")
                         st.rerun()
                     except Exception as exc:
@@ -3313,6 +3405,43 @@ if st.session_state.current_page == "Calendar":
         st.caption("No upcoming entries in the next 30 days.")
 
 
+if st.session_state.current_page == "Audit":
+    st.subheader("🧾 Audit Log")
+    st.caption("Principal-only history of important actions in this school. Newest records are shown first.")
+
+    logs = load_audit_logs(st.session_state.school_code, limit=1000)
+    if not logs:
+        st.info("No audit records yet. New login, attendance, delete and management actions will appear here.")
+    else:
+        action_options = sorted({str(row["action"]) for row in logs})
+        user_options = sorted({str(row["username"]) for row in logs})
+        c1, c2 = st.columns(2)
+        selected_action = c1.selectbox("Action", ["All"] + action_options, key="audit_action_filter")
+        selected_user = c2.selectbox("User", ["All"] + user_options, key="audit_user_filter")
+        filtered_logs = [
+            row for row in logs
+            if (selected_action == "All" or row["action"] == selected_action)
+            and (selected_user == "All" or row["username"] == selected_user)
+        ]
+        display_rows = [{
+            "Date & Time": row["created_at"].strftime("%d %b %Y %I:%M:%S %p") if row["created_at"] else "",
+            "User": row["username"],
+            "Role": str(row["role"]).title(),
+            "Action": row["action"],
+            "Type": row["entity_type"] or "-",
+            "Record": row["entity_id"] or "-",
+            "Details": row["details"] or "",
+        } for row in filtered_logs]
+        st.dataframe(display_rows, hide_index=True, use_container_width=True)
+        if display_rows:
+            audit_csv = pd.DataFrame(display_rows).to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "📥 Download Audit Log CSV", audit_csv,
+                file_name=f"audit_log_{st.session_state.school_code}_{date.today():%Y%m%d}.csv",
+                mime="text/csv", use_container_width=True,
+            )
+
+
 if st.session_state.current_page == "Results":
     st.subheader("📝 Student Marks & Result Module")
     st.caption("Enter subject-wise marks, update corrections, preview totals and download a PDF report card.")
@@ -3324,7 +3453,7 @@ if st.session_state.current_page == "Results":
         default_academic_year = f"{current_year}-{str(current_year + 1)[-2:]}"
         groups = sorted({(str(row["class"]), str(row["division"] or "")) for row in student_rows})
 
-        entry_tab, report_tab = st.tabs(["✍️ Enter / Update Marks", "📄 Report Card"])
+        entry_tab, upload_tab, report_tab = st.tabs(["✍️ Enter / Update Marks", "📤 Upload Marks CSV", "📄 Report Card"])
 
         with entry_tab:
             st.markdown("#### Subject-wise marks")
@@ -3399,6 +3528,11 @@ if st.session_state.current_page == "Results":
                             db.execute(student_results.insert().values(**values))
                             action = "saved"
                         db.commit()
+                        write_audit_log(
+                            "MARKS_UPDATE" if action == "updated" else "MARKS_CREATE",
+                            f"{subject}: {int(marks_obtained)}/{int(max_marks)} for {student_map[int(result_student_id)]['name']} · {exam} · {year}",
+                            entity_type="student_result", entity_id=(existing["id"] if existing else result_student_id),
+                        )
                         st.success(f"✅ {subject} marks {action} for {student_map[int(result_student_id)]['name']}.")
                         st.rerun()
                     except Exception as exc:
@@ -3445,7 +3579,14 @@ if st.session_state.current_page == "Results":
                                     student_results.c.id == int(delete_result_id),
                                     student_results.c.school_code == st.session_state.school_code,
                                 ))
+                                deleted_row = row_map.get(int(delete_result_id))
                                 db.commit()
+                                write_audit_log(
+                                    "MARKS_DELETE",
+                                    (f"Deleted {deleted_row['subject_name']} marks {deleted_row['marks_obtained']}/{deleted_row['max_marks']} "
+                                     f"for exam {deleted_row['exam_name']}." if deleted_row else "Deleted marks entry."),
+                                    entity_type="student_result", entity_id=delete_result_id,
+                                )
                                 st.success("Marks entry deleted.")
                                 st.rerun()
                             except Exception as exc:
@@ -3453,6 +3594,220 @@ if st.session_state.current_page == "Results":
                                 st.error(f"Could not delete marks: {exc}")
                             finally:
                                 db.close()
+
+        with upload_tab:
+            st.markdown("#### 📤 Upload marks from CSV")
+            st.caption("Bulk upload subject-wise marks. Existing student/exam/subject entries are updated; new entries are created.")
+
+            template_columns = [
+                "student_name", "class", "division", "academic_year", "exam",
+                "subject", "max_marks", "marks_obtained", "remarks"
+            ]
+            template_df = pd.DataFrame([
+                {
+                    "student_name": "Rohan Patil",
+                    "class": "5",
+                    "division": "A",
+                    "academic_year": default_academic_year,
+                    "exam": "Unit Test 1",
+                    "subject": "Mathematics",
+                    "max_marks": 50,
+                    "marks_obtained": 42,
+                    "remarks": "Good",
+                },
+                {
+                    "student_name": "Rohan Patil",
+                    "class": "5",
+                    "division": "A",
+                    "academic_year": default_academic_year,
+                    "exam": "Unit Test 1",
+                    "subject": "Science",
+                    "max_marks": 50,
+                    "marks_obtained": 45,
+                    "remarks": "Very Good",
+                },
+            ])
+            st.download_button(
+                "📥 Download Marks CSV Template",
+                data=template_df.to_csv(index=False).encode("utf-8"),
+                file_name="student_marks_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_marks_csv_template",
+            )
+
+            marks_csv = st.file_uploader(
+                "Choose marks CSV file", type=["csv"], key="marks_csv_uploader"
+            )
+
+            if marks_csv is not None:
+                try:
+                    upload_df = pd.read_csv(marks_csv)
+                    upload_df.columns = [str(c).strip().lower() for c in upload_df.columns]
+
+                    required = {
+                        "student_name", "class", "division", "academic_year",
+                        "exam", "subject", "max_marks", "marks_obtained"
+                    }
+                    missing = sorted(required - set(upload_df.columns))
+
+                    if missing:
+                        st.error("Missing required column(s): " + ", ".join(missing))
+                    elif upload_df.empty:
+                        st.warning("The CSV file is empty.")
+                    else:
+                        if "remarks" not in upload_df.columns:
+                            upload_df["remarks"] = ""
+
+                        # Build a lookup only from students this logged-in account is allowed to access.
+                        accessible_students = {}
+                        for row in student_rows:
+                            key = (
+                                str(row["name"]).strip().casefold(),
+                                str(row["class"]).strip().casefold(),
+                                str(row["division"] or "").strip().casefold(),
+                            )
+                            accessible_students.setdefault(key, []).append(row)
+
+                        preview_rows = []
+                        valid_payloads = []
+
+                        for idx, csv_row in upload_df.iterrows():
+                            row_no = int(idx) + 2
+                            name = str(csv_row.get("student_name", "")).strip()
+                            class_name = str(csv_row.get("class", "")).strip()
+                            division = str(csv_row.get("division", "")).strip()
+                            year = str(csv_row.get("academic_year", "")).strip()
+                            exam = str(csv_row.get("exam", "")).strip()
+                            subject = str(csv_row.get("subject", "")).strip()
+                            remarks_value = csv_row.get("remarks", "")
+                            remarks_value = "" if pd.isna(remarks_value) else str(remarks_value).strip()
+
+                            problems = []
+                            matches = accessible_students.get((
+                                name.casefold(), class_name.casefold(), division.casefold()
+                            ), [])
+
+                            if not name or not class_name or not year or not exam or not subject:
+                                problems.append("Required text value is blank")
+                            if not matches:
+                                problems.append("Student not found / not allowed for this account")
+                            elif len(matches) > 1:
+                                problems.append("More than one matching student found")
+
+                            try:
+                                max_value = int(float(csv_row.get("max_marks")))
+                                obtained_value = int(float(csv_row.get("marks_obtained")))
+                                if max_value <= 0:
+                                    problems.append("max_marks must be greater than 0")
+                                if obtained_value < 0:
+                                    problems.append("marks_obtained cannot be negative")
+                                if obtained_value > max_value:
+                                    problems.append("marks_obtained cannot exceed max_marks")
+                            except (TypeError, ValueError):
+                                max_value = 0
+                                obtained_value = 0
+                                problems.append("Marks must be numeric")
+
+                            status = "✅ Valid" if not problems else "❌ " + "; ".join(problems)
+                            preview_rows.append({
+                                "Row": row_no, "Student": name, "Class": class_name,
+                                "Division": division, "Year": year, "Exam": exam,
+                                "Subject": subject, "Marks": f"{obtained_value}/{max_value}" if not problems or max_value else "-",
+                                "Status": status,
+                            })
+
+                            if not problems:
+                                valid_payloads.append({
+                                    "row_no": row_no,
+                                    "student_id": int(matches[0]["id"]),
+                                    "student_name": matches[0]["name"],
+                                    "academic_year": year,
+                                    "exam_name": exam,
+                                    "subject_name": subject,
+                                    "max_marks": max_value,
+                                    "marks_obtained": obtained_value,
+                                    "remarks": remarks_value,
+                                })
+
+                        st.markdown("##### Preview & validation")
+                        st.dataframe(preview_rows, hide_index=True, use_container_width=True)
+
+                        invalid_count = len(preview_rows) - len(valid_payloads)
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("CSV Rows", len(preview_rows))
+                        c2.metric("Valid", len(valid_payloads))
+                        c3.metric("Invalid", invalid_count)
+
+                        if invalid_count:
+                            st.warning("Fix invalid rows and upload the CSV again. Only valid rows can be imported.")
+
+                        allow_partial = st.checkbox(
+                            "Import valid rows even if some rows are invalid",
+                            value=False, key="marks_csv_allow_partial"
+                        )
+                        can_import = bool(valid_payloads) and (invalid_count == 0 or allow_partial)
+
+                        if st.button(
+                            "✅ Import Valid Marks",
+                            type="primary", use_container_width=True,
+                            disabled=not can_import, key="import_marks_csv_button",
+                        ):
+                            db = SessionLocal()
+                            created = 0
+                            updated = 0
+                            try:
+                                ensure_student_results_table(db)
+                                for item in valid_payloads:
+                                    existing = db.execute(select(student_results).where(
+                                        student_results.c.school_code == st.session_state.school_code,
+                                        student_results.c.student_id == int(item["student_id"]),
+                                        func.lower(student_results.c.academic_year) == item["academic_year"].lower(),
+                                        func.lower(student_results.c.exam_name) == item["exam_name"].lower(),
+                                        func.lower(student_results.c.subject_name) == item["subject_name"].lower(),
+                                    )).mappings().first()
+
+                                    values = dict(
+                                        school_code=st.session_state.school_code,
+                                        student_id=int(item["student_id"]),
+                                        academic_year=item["academic_year"],
+                                        exam_name=item["exam_name"],
+                                        subject_name=item["subject_name"],
+                                        max_marks=int(item["max_marks"]),
+                                        marks_obtained=int(item["marks_obtained"]),
+                                        remarks=item["remarks"],
+                                        updated_by=st.session_state.username,
+                                        updated_at=datetime.utcnow(),
+                                    )
+
+                                    if existing:
+                                        db.execute(student_results.update().where(
+                                            student_results.c.id == int(existing["id"])
+                                        ).values(**values))
+                                        updated += 1
+                                    else:
+                                        db.execute(student_results.insert().values(**values))
+                                        created += 1
+
+                                db.commit()
+                                write_audit_log(
+                                    "MARKS_CSV_IMPORT",
+                                    f"Marks CSV imported: {created} created, {updated} updated, {invalid_count} invalid row(s).",
+                                    entity_type="student_result",
+                                )
+                                st.success(
+                                    f"✅ Import complete — New: {created}, Updated: {updated}, "
+                                    f"Skipped invalid: {invalid_count}."
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                db.rollback()
+                                st.error(f"Marks CSV import failed: {exc}")
+                            finally:
+                                db.close()
+                except Exception as exc:
+                    st.error(f"Could not read CSV file: {exc}")
+
 
         with report_tab:
             st.markdown("#### Student report card")
@@ -4164,6 +4519,11 @@ if st.session_state.current_page == "Parents":
                                 created_at=datetime.utcnow(),
                             ))
                             db.commit()
+                            write_audit_log(
+                                "PARENT_ACCOUNT_CREATE",
+                                f"Created parent login {clean_username} for {student_map[selected_student_id].name}.",
+                                entity_type="parent", entity_id=clean_username,
+                            )
                             st.success(
                                 f"✅ Parent login created for {student_map[selected_student_id].name}. "
                                 f"Username: {clean_username}"
@@ -4211,7 +4571,12 @@ if st.session_state.current_page == "Parents":
                         parent_accounts.c.id == int(delete_parent_id),
                         parent_accounts.c.school_code == st.session_state.school_code,
                     ))
+                    deleted_parent_label = delete_options.get(delete_parent_id, str(delete_parent_id))
                     db.commit()
+                    write_audit_log(
+                        "PARENT_ACCOUNT_DELETE", f"Deleted parent login {deleted_parent_label}.",
+                        entity_type="parent", entity_id=delete_parent_id,
+                    )
                     st.success("Parent login deleted.")
                     st.rerun()
                 except Exception as exc:
@@ -4279,6 +4644,10 @@ if st.session_state.current_page == "Teachers":
                             values["phone_verified"] = 0
                         db.add(User(**values))
                         db.commit()
+                        write_audit_log(
+                            "TEACHER_ACCOUNT_CREATE", f"Created teacher login {username} for {name}.",
+                            entity_type="teacher", entity_id=username,
+                        )
                         st.success(f"✅ Teacher login created: {username}")
                         st.info("Share the username and temporary password with the teacher securely. The password is not shown again.")
                         st.rerun()
@@ -4335,6 +4704,11 @@ if st.session_state.current_page == "Teachers":
                             teacher_name=selected_teacher_username,
                         ))
                     db.commit()
+                    write_audit_log(
+                        "TEACHER_ASSIGNMENT",
+                        f"Assigned {selected_teacher_username} to Class {class_name}{division_name}.",
+                        entity_type="class_assignment", entity_id=f"{class_name}{division_name}",
+                    )
                     st.success(
                         f"✅ {teacher_accounts[selected_teacher_username]['name']} assigned to "
                         f"Class {class_name}{division_name}."
@@ -4377,6 +4751,11 @@ if st.session_state.current_page == "Teachers":
                     teacher_assignments.c.division == remove_group[1],
                 ))
                 db.commit()
+                write_audit_log(
+                    "TEACHER_UNASSIGN",
+                    f"Removed teacher assignment from Class {remove_group[0]}{remove_group[1]}.",
+                    entity_type="class_assignment", entity_id=f"{remove_group[0]}{remove_group[1]}",
+                )
                 st.success(f"Teacher unassigned from Class {remove_group[0]}{remove_group[1]}.")
                 st.rerun()
             except Exception as exc:
@@ -4430,8 +4809,13 @@ if st.session_state.current_page == 'Attendance':
                             db.query(Attendance).filter(Attendance.student_id == student.id).delete(
                                 synchronize_session=False
                             )
+                            deleted_student_name = student.name
                             db.delete(student)
                             db.commit()
+                            write_audit_log(
+                                "STUDENT_DELETE", f"Deleted student {deleted_student_name} and attendance records.",
+                                entity_type="student", entity_id=delete_id,
+                            )
                             st.session_state.pop("confirm_delete_student_id", None)
                             st.session_state.student_action_message = "Student deleted successfully."
                             st.rerun()
@@ -4478,6 +4862,10 @@ if st.session_state.current_page == 'Attendance':
                                 teacher_assignments.c.school_code == school_code
                             ))
                             db.commit()
+                            write_audit_log(
+                                "STUDENTS_DELETE_ALL", f"Deleted {len(ids)} students, attendance records and class teacher assignments.",
+                                entity_type="school", entity_id=school_code,
+                            )
                             st.session_state.pop("confirm_delete_student_id", None)
                             st.session_state.student_action_message = (
                                 f"Deleted {len(ids)} students and their school records."
@@ -4639,6 +5027,8 @@ if st.session_state.current_page == 'Attendance':
                         Attendance.student_id.in_(list(current_students)),
                         Attendance.date == attendance_date,
                     ).all()}
+                    created_count = 0
+                    changed_count = 0
                     for _, row in edited_table.iterrows():
                         student_id = int(row["ID"])
                         student = current_students.get(student_id)
@@ -4650,13 +5040,20 @@ if st.session_state.current_page == 'Attendance':
                             old_present = str(old_record.status).lower() == "present"
                             if old_present != (status == "present"):
                                 student.present_days = max(0, int(student.present_days or 0) + (1 if status == "present" else -1))
+                                changed_count += 1
                             old_record.status = status
                         else:
                             db.add(Attendance(student_id=student_id, date=attendance_date, status=status))
+                            created_count += 1
                             student.total_days = int(student.total_days or 0) + 1
                             if status == "present":
                                 student.present_days = int(student.present_days or 0) + 1
                     db.commit()
+                    write_audit_log(
+                        "ATTENDANCE_SAVE",
+                        f"Class {class_name}{division_name} · {attendance_date} · new records: {created_count}, changed records: {changed_count}, students: {len(current_students)}.",
+                        entity_type="attendance", entity_id=f"{class_name}{division_name}:{attendance_date}",
+                    )
                     st.success(f"Attendance saved for Class {class_name}{division_name} on {attendance_date}.")
                     st.rerun()
                 except Exception as exc:
