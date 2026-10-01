@@ -473,6 +473,82 @@ from urllib.request import Request, urlopen
 load_dotenv()
 
 # =========================================================
+# AI DAILY USAGE LIMIT
+# =========================================================
+# Counts paid AI requests per school per day. Configure in .env:
+# AI_DAILY_REQUEST_LIMIT=50
+ai_usage_metadata = MetaData()
+ai_usage_logs = Table(
+    "ai_usage_logs", ai_usage_metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("school_code", String(100), nullable=False),
+    Column("username", String(100), nullable=False),
+    Column("feature", String(100), nullable=False),
+    Column("used_at", DateTime, nullable=False),
+)
+
+
+def get_ai_daily_request_limit():
+    try:
+        return max(1, int(os.getenv("AI_DAILY_REQUEST_LIMIT", "50")))
+    except (TypeError, ValueError):
+        return 50
+
+
+def ensure_ai_usage_table(db):
+    ai_usage_metadata.create_all(db.get_bind(), tables=[ai_usage_logs], checkfirst=True)
+
+
+def get_ai_usage_today(school_code):
+    """Return paid AI request count for the current school for today's server date."""
+    start = datetime.combine(date.today(), datetime.min.time())
+    end = start + timedelta(days=1)
+    db = SessionLocal()
+    try:
+        ensure_ai_usage_table(db)
+        return int(db.execute(
+            select(func.count()).select_from(ai_usage_logs).where(
+                ai_usage_logs.c.school_code == str(school_code or ""),
+                ai_usage_logs.c.used_at >= start,
+                ai_usage_logs.c.used_at < end,
+            )
+        ).scalar_one())
+    finally:
+        db.close()
+
+
+def try_consume_ai_request(feature):
+    """Reserve one paid AI request if the school's daily limit has not been reached."""
+    limit = get_ai_daily_request_limit()
+    start = datetime.combine(date.today(), datetime.min.time())
+    end = start + timedelta(days=1)
+    db = SessionLocal()
+    try:
+        ensure_ai_usage_table(db)
+        used = int(db.execute(
+            select(func.count()).select_from(ai_usage_logs).where(
+                ai_usage_logs.c.school_code == st.session_state.school_code,
+                ai_usage_logs.c.used_at >= start,
+                ai_usage_logs.c.used_at < end,
+            )
+        ).scalar_one())
+        if used >= limit:
+            return False, used, limit
+        db.execute(ai_usage_logs.insert().values(
+            school_code=st.session_state.school_code,
+            username=str(st.session_state.username or "unknown"),
+            feature=str(feature or "AI"),
+            used_at=datetime.now(),
+        ))
+        db.commit()
+        return True, used + 1, limit
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+# =========================================================
 # AUDIT LOG
 # =========================================================
 audit_metadata = MetaData()
@@ -5600,6 +5676,17 @@ def make_offline_lesson_plan(class_name, subject, topic, teaching_date, periods,
 
 
 if st.session_state.current_page == "AI":
+    ai_limit = get_ai_daily_request_limit()
+    ai_used = get_ai_usage_today(st.session_state.school_code)
+    ai_remaining = max(0, ai_limit - ai_used)
+    usage_cols = st.columns(3)
+    usage_cols[0].metric("AI requests today", ai_used)
+    usage_cols[1].metric("Daily limit", ai_limit)
+    usage_cols[2].metric("Remaining", ai_remaining)
+    st.caption("The daily limit is shared by this school across paid AI features. Offline lesson-plan mode does not use the limit.")
+    if ai_remaining <= 0:
+        st.warning("Daily AI limit reached. Paid AI requests are paused until the next day. Offline lesson-plan mode is still available.")
+
     attendance_tab, lesson_tab = st.tabs(["🤖 Attendance Assistant", "📚 Lesson Plan Agent"])
     with attendance_tab:
         # =========================================================
@@ -5618,7 +5705,8 @@ if st.session_state.current_page == "AI":
 
 
         prompt = st.chat_input(
-            "Ask about student attendance..."
+            "Ask about student attendance...",
+            disabled=(ai_remaining <= 0),
         )
 
         if prompt:
@@ -5633,12 +5721,18 @@ if st.session_state.current_page == "AI":
             with st.chat_message("assistant"):
                 with st.spinner("🤖 Checking attendance..."):
                     try:
-                        result = Runner.run_sync(
-                            agent,
-                            prompt
-                        )
-
-                        response = result.final_output
+                        if not os.getenv("OPENAI_API_KEY"):
+                            response = "⚠️ OpenAI API key is not configured."
+                        else:
+                            allowed, used_now, limit_now = try_consume_ai_request("attendance_assistant")
+                            if not allowed:
+                                response = f"⚠️ Daily AI limit reached ({used_now}/{limit_now}). Try again tomorrow."
+                            else:
+                                result = Runner.run_sync(
+                                    agent,
+                                    prompt
+                                )
+                                response = result.final_output
 
                     except Exception as e:
                         response = f"⚠️ Error: {e}"
@@ -5702,8 +5796,21 @@ if st.session_state.current_page == "AI":
                 else:
                     with st.spinner("Creating lesson plan..."):
                         try:
-                            result = Runner.run_sync(lesson_agent, request)
-                            plan_text = str(result.final_output)
+                            if not os.getenv("OPENAI_API_KEY"):
+                                st.warning("OpenAI API key is not configured. Created an offline template instead.")
+                                plan_text = make_offline_lesson_plan(lp_class.strip(), lp_subject.strip(),
+                                                                    lp_topic.strip(), lp_date, int(lp_periods),
+                                                                    int(lp_minutes), extra.strip())
+                            else:
+                                allowed, used_now, limit_now = try_consume_ai_request("lesson_plan")
+                                if not allowed:
+                                    st.warning(f"Daily AI limit reached ({used_now}/{limit_now}). Created an offline template instead.")
+                                    plan_text = make_offline_lesson_plan(lp_class.strip(), lp_subject.strip(),
+                                                                        lp_topic.strip(), lp_date, int(lp_periods),
+                                                                        int(lp_minutes), extra.strip())
+                                else:
+                                    result = Runner.run_sync(lesson_agent, request)
+                                    plan_text = str(result.final_output)
                         except Exception as exc:
                             error_text = str(exc).lower()
                             if any(code in error_text for code in ("insufficient_quota", "credit_balance_exhausted", "no credits remaining")):
