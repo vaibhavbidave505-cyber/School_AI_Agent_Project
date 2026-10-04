@@ -2,7 +2,7 @@
 school.db
 database_sqlite_backup.py
 school_backup_*.db
-
+*.dump
 venv/
 __pycache__/
 *.pyc
