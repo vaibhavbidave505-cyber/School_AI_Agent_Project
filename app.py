@@ -459,6 +459,9 @@ import hmac
 import hashlib
 import base64
 import re
+import io
+import streamlit.components.v1 as components
+from openai import OpenAI
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -471,6 +474,35 @@ from urllib.request import Request, urlopen
 # =========================================================
 
 load_dotenv()
+
+# =========================================================
+# PERFORMANCE HELPERS
+# =========================================================
+# Remote PostgreSQL (Neon) has network latency.  The app used to run
+# CREATE TABLE ... checkfirst=True repeatedly from many helper functions.
+# Keep the safety check, but do it only once per table per app process.
+_ENSURED_TABLES = set()
+_ENSURE_TABLES_LOCK = Lock()
+
+
+def ensure_tables_once(key, metadata, db, tables):
+    # Fast production mode: the Neon database has already been migrated.
+    # Avoid remote schema-inspection/DDL round trips on normal app requests.
+    skip_schema_checks = os.getenv("SKIP_SCHEMA_CHECKS", "1").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    if skip_schema_checks:
+        _ENSURED_TABLES.add(key)
+        return
+
+    if key in _ENSURED_TABLES:
+        return
+    with _ENSURE_TABLES_LOCK:
+        if key in _ENSURED_TABLES:
+            return
+        metadata.create_all(db.get_bind(), tables=tables, checkfirst=True)
+        _ENSURED_TABLES.add(key)
+
 
 # =========================================================
 # AI DAILY USAGE LIMIT
@@ -496,7 +528,7 @@ def get_ai_daily_request_limit():
 
 
 def ensure_ai_usage_table(db):
-    ai_usage_metadata.create_all(db.get_bind(), tables=[ai_usage_logs], checkfirst=True)
+    ensure_tables_once("ai_usage_logs", ai_usage_metadata, db, [ai_usage_logs])
 
 
 def get_ai_usage_today(school_code):
@@ -566,7 +598,7 @@ audit_logs = Table(
 )
 
 def ensure_audit_log_table(db):
-    audit_metadata.create_all(db.get_bind(), tables=[audit_logs], checkfirst=True)
+    ensure_tables_once("audit_logs", audit_metadata, db, [audit_logs])
 
 def write_audit_log(action, details="", entity_type="", entity_id="", school_code=None, username=None, role=None):
     """Write a non-blocking audit record. Audit failures must never break the main action."""
@@ -623,7 +655,7 @@ parent_accounts = Table(
 )
 
 def ensure_parent_accounts_table(db):
-    parent_metadata.create_all(db.get_bind(), tables=[parent_accounts], checkfirst=True)
+    ensure_tables_once("parent_accounts", parent_metadata, db, [parent_accounts])
 
 def find_parent_account(db, username):
     ensure_parent_accounts_table(db)
@@ -651,7 +683,7 @@ school_calendar = Table(
 
 
 def ensure_school_calendar_table(db):
-    calendar_metadata.create_all(db.get_bind(), tables=[school_calendar], checkfirst=True)
+    ensure_tables_once("school_calendar", calendar_metadata, db, [school_calendar])
 
 
 def load_school_calendar(school_code, start_date=None, end_date=None):
@@ -708,7 +740,7 @@ student_results = Table(
 
 
 def ensure_student_results_table(db):
-    result_metadata.create_all(db.get_bind(), tables=[student_results], checkfirst=True)
+    ensure_tables_once("student_results", result_metadata, db, [student_results])
 
 
 def load_student_results(school_code, student_id=None, academic_year=None, exam_name=None):
@@ -851,7 +883,7 @@ schools = Table(
 
 
 def ensure_admin_tables(db):
-    admin_metadata.create_all(db.get_bind(), tables=[schools], checkfirst=True)
+    ensure_tables_once("schools", admin_metadata, db, [schools])
 
 
 def sync_existing_schools(db):
@@ -888,7 +920,8 @@ def sync_existing_schools(db):
     db.commit()
 
 
-def get_school_name(school_code):
+@st.cache_data(ttl=60, show_spinner=False)
+def _get_school_name_cached(school_code):
     if not school_code:
         return "School AI"
     db = SessionLocal()
@@ -900,6 +933,10 @@ def get_school_name(school_code):
         return row["school_name"] if row else str(school_code)
     finally:
         db.close()
+
+
+def get_school_name(school_code):
+    return _get_school_name_cached(str(school_code or ""))
 
 
 def school_is_active(db, school_code):
@@ -2443,28 +2480,22 @@ def load_attendance_from_db():
     finally:
         db.close()
 
-def get_student_summary():
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_student_summary_cached(school_code):
     db = SessionLocal()
-
     try:
         students = (
             db.query(Student)
-            .filter(Student.school_code == st.session_state.school_code)
+            .filter(Student.school_code == str(school_code or ""))
             .order_by(Student.name)
             .all()
         )
 
         result = []
-
         for student in students:
             total_days = student.total_days or 0
             present_days = student.present_days or 0
-
-            percentage = (
-                (present_days / total_days) * 100
-                if total_days
-                else 0
-            )
+            percentage = ((present_days / total_days) * 100) if total_days else 0
 
             result.append({
                 "id": student.id,
@@ -2475,13 +2506,21 @@ def get_student_summary():
                 "total_days": int(total_days),
                 "present_days": int(present_days),
                 "attendance_percentage": percentage,
-
             })
-
         return result
-
     finally:
         db.close()
+
+
+def get_student_summary():
+    # Short TTL keeps the UI fresh while avoiding a remote DB round-trip
+    # on every harmless Streamlit rerun.
+    return _get_student_summary_cached(st.session_state.school_code)
+
+
+def invalidate_student_summary_cache():
+    """Refresh student totals immediately after a student/attendance write."""
+    _get_student_summary_cached.clear()
 
 
 # Teacher assignments are stored beside the existing school tables.
@@ -2495,24 +2534,35 @@ teacher_assignments = Table(
 )
 
 
-def load_teacher_assignments():
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_teacher_assignments_cached(school_code):
     db = SessionLocal()
     try:
-        assignment_metadata.create_all(db.get_bind(), tables=[teacher_assignments], checkfirst=True)
+        ensure_tables_once(
+            "class_teacher_assignments",
+            assignment_metadata,
+            db,
+            [teacher_assignments],
+        )
         rows = db.execute(select(teacher_assignments).where(
-            teacher_assignments.c.school_code == st.session_state.school_code
+            teacher_assignments.c.school_code == str(school_code or "")
         )).mappings().all()
         return {(row["class_name"], row["division"]): row["teacher_name"] for row in rows}
     finally:
         db.close()
 
 
-def load_teacher_accounts():
-    """Return teacher accounts for the current school, keyed by username."""
+def load_teacher_assignments():
+    return _load_teacher_assignments_cached(st.session_state.school_code)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_teacher_accounts_cached(school_code):
+    """Return teacher accounts for one school, keyed by username."""
     db = SessionLocal()
     try:
         teachers = db.query(User).filter(
-            User.school_code == st.session_state.school_code,
+            User.school_code == str(school_code or ""),
             func.lower(User.role) == "teacher",
         ).order_by(User.name, User.username).all()
         return {
@@ -2525,6 +2575,10 @@ def load_teacher_accounts():
         }
     finally:
         db.close()
+
+
+def load_teacher_accounts():
+    return _load_teacher_accounts_cached(st.session_state.school_code)
 
 
 def get_allowed_teacher_groups():
@@ -2543,26 +2597,32 @@ def get_allowed_teacher_groups():
     return allowed
 
 
-def teacher_display_name(assignment_value):
-    """Convert a stored teacher username to a friendly display name."""
+def teacher_display_name(assignment_value, accounts=None):
+    """Convert a stored teacher username to a friendly display name.
+
+    Pass a preloaded accounts mapping when rendering a list/table so one page
+    does not perform the same remote query repeatedly.
+    """
     value = str(assignment_value or "").strip()
     if not value:
         return "Not assigned"
-    accounts = load_teacher_accounts()
+    accounts = accounts if accounts is not None else load_teacher_accounts()
     account = accounts.get(value)
     if account:
         return f"{account['name']} (@{account['username']})"
     return value
 
 
-def load_today_class_status(school_code, groups):
+@st.cache_data(ttl=15, show_spinner=False)
+def _load_today_class_status_cached(school_code, groups_tuple, today_iso):
     """Return attendance progress for today's roster, scoped to this school."""
     db = SessionLocal()
     try:
         students = db.query(Student).filter(Student.school_code == school_code).all()
         student_ids = [student.id for student in students]
+        target_date = date.fromisoformat(today_iso)
         records = db.query(Attendance).filter(
-            Attendance.student_id.in_(student_ids), Attendance.date == date.today()
+            Attendance.student_id.in_(student_ids), Attendance.date == target_date
         ).all() if student_ids else []
         statuses = {record.student_id: str(record.status).lower() for record in records}
         by_group = {}
@@ -2575,10 +2635,18 @@ def load_today_class_status(school_code, groups):
                 "marked": sum(sid in statuses for sid in by_group.get(group, [])),
                 "absent": sum(statuses.get(sid) == "absent" for sid in by_group.get(group, [])),
             }
-            for group in groups
+            for group in groups_tuple
         }
     finally:
         db.close()
+
+
+def load_today_class_status(school_code, groups):
+    return _load_today_class_status_cached(
+        str(school_code or ""),
+        tuple(tuple(group) for group in groups),
+        date.today().isoformat(),
+    )
 
 
 def get_three_day_absences(school_code):
@@ -2881,22 +2949,37 @@ lesson_plans = Table(
 
 
 # =========================================================
-# LOAD DATABASE DATA
+# LAZY PAGE DATA LOADING
 # =========================================================
+# Only pages that actually need the full student summary trigger a remote
+# PostgreSQL query. Calendar, Audit, Security and AI can render without first
+# downloading the school-wide student list.
+STUDENT_DATA_PAGES = {
+    "Dashboard", "Results", "Analytics", "Monthly Report", "Search",
+    "Parents", "Teachers", "Attendance", "Parent Messages",
+}
 
-try:
-    student_rows = get_student_summary()
-    if str(st.session_state.role).strip().lower() == "teacher":
-        allowed_groups = get_allowed_teacher_groups() or set()
-        student_rows = [
-            row for row in student_rows
-            if (str(row["class"]), str(row["division"] or "")) in allowed_groups
-        ]
-    
-except Exception as e:
-    st.error(f"❌ Could not load school database: {e}")
-    
-    st.stop()
+current_page_for_data = st.session_state.get("current_page", "Dashboard")
+if current_page_for_data not in {
+    "Dashboard", "Attendance", "Parent Messages", "Analytics", "Monthly Report",
+    "Calendar", "Results", "Search", "AI", "Teachers", "Parents", "Security", "Audit",
+}:
+    current_page_for_data = "Dashboard"
+    st.session_state.current_page = "Dashboard"
+
+student_rows = None
+if current_page_for_data in STUDENT_DATA_PAGES:
+    try:
+        student_rows = get_student_summary()
+        if str(st.session_state.role).strip().lower() == "teacher":
+            allowed_groups = get_allowed_teacher_groups() or set()
+            student_rows = [
+                row for row in student_rows
+                if (str(row["class"]), str(row["division"] or "")) in allowed_groups
+            ]
+    except Exception as e:
+        st.error(f"❌ Could not load school database: {e}")
+        st.stop()
 
 
    
@@ -3156,6 +3239,7 @@ if str(st.session_state.role).strip().lower() == "principal":
 
                     db.commit()
                     db.close()
+                    invalidate_student_summary_cache()
 
                     st.sidebar.success(
                         f"✅ Import complete! "
@@ -3175,9 +3259,10 @@ if str(st.session_state.role).strip().lower() == "principal":
    
     st.divider()
 
-    st.info(
-        f"👨‍🎓 Total Students: {len(student_rows)}"
-    )
+    if student_rows is not None:
+        st.info(f"👨‍🎓 Total Students: {len(student_rows)}")
+    else:
+        st.caption("⚡ Student data loads only when this page needs it.")
 
     st.sidebar.divider()
 
@@ -3310,6 +3395,7 @@ if st.session_state.current_page == "Dashboard":
         st.bar_chart(class_rates)
         try:
             teacher_map = load_teacher_assignments()
+            teacher_accounts = load_teacher_accounts()
             groups = sorted({(str(row["class"]), str(row["division"] or "")) for row in student_rows})
             daily_status = load_today_class_status(st.session_state.school_code, groups)
             if str(st.session_state.role).strip().lower() == "principal":
@@ -3323,7 +3409,10 @@ if st.session_state.current_page == "Dashboard":
                 st.caption("Today's count includes only students whose attendance has been saved.")
             st.dataframe([
                 {"Class": f"{class_name}{division}",
-                 "Class teacher": teacher_display_name(teacher_map.get((class_name, division), "")),
+                 "Class teacher": teacher_display_name(
+                     teacher_map.get((class_name, division), ""),
+                     teacher_accounts,
+                 ),
                  "Students": daily_status[(class_name, division)]["students"],
                  "Marked today": f'{daily_status[(class_name, division)]["marked"]}/{daily_status[(class_name, division)]["students"]}',
                  "Absent today": daily_status[(class_name, division)]["absent"]}
@@ -5598,10 +5687,12 @@ def get_attendance(student_name: str) -> str:
 # AI AGENT
 # =========================================================
 
-agent = Agent(
-    name="School AI Assistant",
-
-    instructions="""
+@st.cache_resource(show_spinner=False)
+def get_school_ai_agent():
+    """Create the paid AI agent only when the AI page is actually opened."""
+    return Agent(
+        name="School AI Assistant",
+        instructions="""
 You are a helpful School AI Assistant.
 
 You answer questions about student attendance.
@@ -5616,10 +5707,74 @@ clearly say that no attendance record was found.
 
 Keep answers short and easy to understand.
 """,
+        tools=[get_attendance],
+    )
 
-    tools=[get_attendance]
-)
 
+
+# =========================================================
+# VOICE CHAT HELPERS
+# =========================================================
+VOICE_LANGUAGE_OPTIONS = {
+    "English (India)": "en-IN",
+    "Marathi (India)": "mr-IN",
+    "Hindi (India)": "hi-IN",
+}
+
+
+def transcribe_voice_message(audio_value) -> str:
+    """Transcribe a Streamlit microphone recording with the OpenAI Audio API."""
+    if audio_value is None:
+        return ""
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OpenAI API key is not configured.")
+
+    audio_bytes = audio_value.getvalue()
+    if not audio_bytes:
+        return ""
+
+    audio_buffer = io.BytesIO(audio_bytes)
+    audio_buffer.name = "school_ai_voice.wav"
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    transcription = client.audio.transcriptions.create(
+        model=os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
+        file=audio_buffer,
+    )
+    return str(getattr(transcription, "text", "") or "").strip()
+
+
+def render_voice_player_button(text_value: str, language_code: str, key: str):
+    """Render free browser text-to-speech controls for an assistant message."""
+    if not text_value:
+        return
+    safe_text = json.dumps(str(text_value))
+    safe_lang = json.dumps(str(language_code or "en-IN"))
+    safe_key = re.sub(r"[^A-Za-z0-9_-]", "_", str(key))
+    components.html(
+        f"""
+        <div style="display:flex;gap:8px;align-items:center;margin:2px 0 8px 0;">
+          <button id="speak_{safe_key}" onclick="speak_{safe_key}()"
+            style="border:1px solid #d1d5db;border-radius:9px;padding:6px 11px;background:#fff;cursor:pointer;font-size:13px;">
+            🔊 Listen
+          </button>
+          <button onclick="window.speechSynthesis.cancel()"
+            style="border:1px solid #d1d5db;border-radius:9px;padding:6px 11px;background:#fff;cursor:pointer;font-size:13px;">
+            ⏹ Stop
+          </button>
+        </div>
+        <script>
+          function speak_{safe_key}() {{
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance({safe_text});
+            utterance.lang = {safe_lang};
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            window.speechSynthesis.speak(utterance);
+          }}
+        </script>
+        """,
+        height=48,
+    )
 
 
 
@@ -5676,6 +5831,7 @@ def make_offline_lesson_plan(class_name, subject, topic, teaching_date, periods,
 
 
 if st.session_state.current_page == "AI":
+    agent = get_school_ai_agent()
     ai_limit = get_ai_daily_request_limit()
     ai_used = get_ai_usage_today(st.session_state.school_code)
     ai_remaining = max(0, ai_limit - ai_used)
@@ -5699,15 +5855,63 @@ if st.session_state.current_page == "AI":
             'Ask questions like: "What is Aarav\'s attendance?"'
         )
 
-        for message in st.session_state.messages:
+        voice_col1, voice_col2 = st.columns([2, 1])
+        with voice_col1:
+            voice_recording = st.audio_input(
+                "🎙️ Speak your attendance question",
+                disabled=(ai_remaining < 2),
+                key="attendance_voice_recording",
+            )
+        with voice_col2:
+            voice_language_label = st.selectbox(
+                "🔊 Reply voice",
+                list(VOICE_LANGUAGE_OPTIONS.keys()),
+                key="attendance_voice_language",
+            )
+            st.caption("Voice question uses 2 AI units: transcription + answer.")
+
+        voice_language_code = VOICE_LANGUAGE_OPTIONS[voice_language_label]
+
+        for index, message in enumerate(st.session_state.messages):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+                if message["role"] == "assistant":
+                    render_voice_player_button(
+                        message["content"],
+                        voice_language_code,
+                        key=f"history_{index}",
+                    )
 
-
-        prompt = st.chat_input(
-            "Ask about student attendance...",
+        typed_prompt = st.chat_input(
+            "Type a question or use the microphone above...",
             disabled=(ai_remaining <= 0),
         )
+
+        voice_prompt = None
+        if voice_recording is not None:
+            voice_send = st.button(
+                "🎙️ Transcribe & Send Voice",
+                type="primary",
+                use_container_width=True,
+                disabled=(ai_remaining < 2),
+                key="attendance_voice_send",
+            )
+            if voice_send:
+                try:
+                    allowed_voice, voice_used, voice_limit = try_consume_ai_request("voice_transcription")
+                    if not allowed_voice:
+                        st.warning(f"Daily AI limit reached ({voice_used}/{voice_limit}).")
+                    else:
+                        with st.spinner("🎙️ Converting voice to text..."):
+                            voice_prompt = transcribe_voice_message(voice_recording)
+                        if not voice_prompt:
+                            st.warning("I could not understand the recording. Please record again.")
+                        else:
+                            st.info(f"🎙️ You said: {voice_prompt}")
+                except Exception as exc:
+                    st.error(f"Voice transcription failed: {exc}")
+
+        prompt = typed_prompt or voice_prompt
 
         if prompt:
             st.session_state.messages.append({
@@ -5738,6 +5942,11 @@ if st.session_state.current_page == "AI":
                         response = f"⚠️ Error: {e}"
 
                 st.markdown(response)
+                render_voice_player_button(
+                    response,
+                    voice_language_code,
+                    key=f"latest_{len(st.session_state.messages)}",
+                )
 
             st.session_state.messages.append({
                 "role": "assistant",

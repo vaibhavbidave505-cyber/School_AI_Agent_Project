@@ -34,7 +34,23 @@ engine_kwargs = {
 if DATABASE_URL.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
-    engine_kwargs["pool_recycle"] = 300
+    # Reuse PostgreSQL connections so Neon is not reconnected for every query.
+    # A moderately sized local pool prevents the previous 5+3 QueuePool timeout.
+    engine_kwargs.update({
+        "pool_recycle": 300,
+        "pool_size": 10,
+        "max_overflow": 10,
+        "pool_timeout": 30,
+        "pool_use_lifo": True,
+        "use_native_hstore": False,
+        "connect_args": {
+            "connect_timeout": 8,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        },
+    })
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 Base = declarative_base()
@@ -77,7 +93,16 @@ class User(Base):
     phone_verified = Column(Integer, nullable=False, default=0)
 
 
-Base.metadata.create_all(engine)
+# Production fast-start mode.
+# The cloud database is already migrated, so normal app startup should not
+# perform remote CREATE TABLE / schema-inspection calls.  Set
+# RUN_DB_SCHEMA_CHECKS=1 only when intentionally initializing/upgrading schema.
+RUN_DB_SCHEMA_CHECKS = os.getenv("RUN_DB_SCHEMA_CHECKS", "0").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
+if RUN_DB_SCHEMA_CHECKS:
+    Base.metadata.create_all(engine)
 
 
 def _ensure_user_columns():
@@ -104,7 +129,8 @@ def _ensure_user_columns():
             )
 
 
-_ensure_user_columns()
+if RUN_DB_SCHEMA_CHECKS:
+    _ensure_user_columns()
 
 SessionLocal = sessionmaker(
     bind=engine,
