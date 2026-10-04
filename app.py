@@ -1719,11 +1719,11 @@ def login_page():
         <div class="login-intro">
             <div class="login-eyebrow">SECURE SCHOOL ACCESS</div>
             <div class="login-heading">Welcome to School AI</div>
-            <div class="login-detail">Staff, parents and the platform Super Admin use Sign in. Principal Registration is only for an authorized school principal.</div>
+            <div class="login-detail">Authorized staff, parents, principals and the platform Super Admin can sign in securely.</div>
         </div>
         """, unsafe_allow_html=True)
 
-        signin_tab, forgot_tab, register_tab = st.tabs(["🔐 Sign in", "🔑 Forgot Password", "📝 Principal Registration"])
+        signin_tab, forgot_tab = st.tabs(["🔐 Sign in", "🔑 Forgot Password"])
 
         with signin_tab:
             with st.container(border=True):
@@ -1933,90 +1933,7 @@ def login_page():
                             except Exception as exc:
                                 st.error(f"Could not update password: {exc}")
 
-        with register_tab:
-            with st.container(border=True):
-                st.caption("Only an authorized school principal should create this account.")
-                reg_name = st.text_input("Principal full name", key="reg_name")
-                reg_username = st.text_input("Create username", key="reg_username")
-                reg_phone = st.text_input("Mobile number", placeholder="+919876543210", key="reg_phone")
-                reg_school_code = st.text_input(
-                    "School code",
-                    value=os.getenv("SCHOOL_CODE", "SCHOOL001"),
-                    key="reg_school_code",
-                )
-                reg_password = st.text_input("Create password", type="password", key="reg_password")
-                reg_confirm = st.text_input("Confirm password", type="password", key="reg_confirm")
-                reg_code = st.text_input("Principal registration code", type="password", key="reg_code")
-                st.caption("The registration code is stored in .env as PRINCIPAL_REGISTRATION_CODE.")
-
-                register_clicked = st.button(
-                    "Create Principal Account →",
-                    type="primary",
-                    use_container_width=True,
-                    key="register_principal_submit",
-                )
-
-                if register_clicked:
-                    configured_code = os.getenv("PRINCIPAL_REGISTRATION_CODE", "").strip()
-                    name = reg_name.strip()
-                    new_username = reg_username.strip()
-                    phone = reg_phone.strip()
-                    school_code = reg_school_code.strip()
-
-                    if not configured_code:
-                        st.error("Principal registration is not enabled. Add PRINCIPAL_REGISTRATION_CODE to .env and restart the app.")
-                    elif not hmac.compare_digest(reg_code.strip(), configured_code):
-                        st.error("Invalid principal registration code.")
-                    elif not name or not new_username or not school_code:
-                        st.error("Name, username and school code are required.")
-                    elif not re.fullmatch(r"[A-Za-z0-9_.-]{4,50}", new_username):
-                        st.error("Username must be 4–50 characters and use only letters, numbers, dot, underscore or hyphen.")
-                    elif not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-                        st.error("Use mobile format like +919876543210.")
-                    elif len(reg_password) < 8:
-                        st.error("Password must be at least 8 characters.")
-                    elif reg_password != reg_confirm:
-                        st.error("Passwords do not match.")
-                    else:
-                        db = SessionLocal()
-                        try:
-                            existing = db.query(User).filter(
-                                func.lower(User.username) == new_username.lower()
-                            ).first()
-                            if existing:
-                                st.error("This username already exists. Choose another username.")
-                            else:
-                                password_hash = bcrypt.hashpw(
-                                    reg_password.encode("utf-8"), bcrypt.gensalt()
-                                ).decode("utf-8")
-                                new_user = User(
-                                    user_id=f"principal-{secrets.token_hex(6)}",
-                                    name=name,
-                                    username=new_username,
-                                    password_hash=password_hash,
-                                    role="principal",
-                                    school_code=school_code,
-                                    phone=phone,
-                                    phone_verified=0,
-                                )
-                                db.add(new_user)
-                                db.commit()
-                                db.refresh(new_user)
-                                try:
-                                    start_principal_otp(new_user)
-                                    st.success("✅ Account created. Verify the OTP to finish registration.")
-                                    st.rerun()
-                                except Exception as exc:
-                                    st.warning(
-                                        "Account was created, but OTP could not be sent. "
-                                        f"You can sign in later after fixing OTP settings. Details: {exc}"
-                                    )
-                        except Exception as exc:
-                            db.rollback()
-                            st.error(f"Registration failed: {exc}")
-                        finally:
-                            db.close()
-
+    st.caption("🔒 Principal accounts can only be created by the Super Admin. Public principal registration is disabled.")
     st.markdown('<div class="login-foot">🎓 School AI Assistant · Secure school access</div>', unsafe_allow_html=True)
 
 
